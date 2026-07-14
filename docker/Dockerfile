@@ -18,7 +18,7 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm --filter web build && pnpm --filter @aitim/db build:migrator
+RUN pnpm --filter web build && pnpm --filter web build:worker && pnpm --filter @aitim/db build:migrator
 
 FROM base AS runner
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
@@ -32,6 +32,9 @@ COPY --from=build --chown=app:app /app/apps/web/public ./apps/web/public
 # Migrations + bundled migrator for the entrypoint migration step
 COPY --from=build --chown=app:app /app/packages/db/migrations ./packages/db/migrations
 COPY --from=build --chown=app:app /app/packages/db/dist/migrate.cjs ./migrate.cjs
+
+# Worker bundle (run with: node dist/worker.js)
+COPY --from=build --chown=app:app /app/apps/web/dist/worker.js ./dist/worker.js
 COPY --chown=app:app docker/entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
