@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getSpaceRole, requireUser } from "@/lib/rbac";
 import { Board } from "@/modules/tasks/components/board";
+import { ListLiveRefresh } from "@/modules/tasks/components/list-live-refresh";
 import { NewTaskDialog } from "@/modules/tasks/components/new-task-dialog";
 import { TaskTable } from "@/modules/tasks/components/task-table";
 import {
@@ -72,6 +73,7 @@ export default async function ListPage(props: {
 
   return (
     <div className="flex h-full flex-col">
+      <ListLiveRefresh listId={list.id} />
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div>
           <div className="text-sm text-muted-foreground">

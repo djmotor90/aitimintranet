@@ -11,14 +11,24 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpaceRole, requireUser } from "@/lib/rbac";
 import { archiveTask, toggleAssignee, updateTaskCore } from "@/modules/tasks/actions";
+import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
+import { CommentBox } from "@/modules/tasks/components/comment-box";
 import { CustomFieldInput } from "@/modules/tasks/components/custom-field-input";
 import {
   getActiveUsers,
   getFieldDefinitions,
   getStatusesForList,
   getTaskActivity,
+  getTaskAttachments,
   getTaskByNumber,
+  getTaskComments,
 } from "@/modules/tasks/queries";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 function describeActivity(a: {
   verb: string;
@@ -70,12 +80,15 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   if (!role) notFound();
   const canEdit = role === "owner" || role === "member";
 
-  const [listStatuses, fieldDefs, activity, activeUsers] = await Promise.all([
-    getStatusesForList(task.listId),
-    getFieldDefinitions(task.listId),
-    getTaskActivity(task.id),
-    getActiveUsers(),
-  ]);
+  const [listStatuses, fieldDefs, activity, activeUsers, taskComments, taskAttachments] =
+    await Promise.all([
+      getStatusesForList(task.listId),
+      getFieldDefinitions(task.listId),
+      getTaskActivity(task.id),
+      getActiveUsers(),
+      getTaskComments(task.id),
+      getTaskAttachments(task.id),
+    ]);
   const { taskAssignees: ta } = await import("@aitim/db");
   const assigneeRows = await db.select().from(ta).where(eq(ta.taskId, task.id));
   const assigneeIds = new Set(assigneeRows.map((r) => r.userId));
@@ -170,6 +183,62 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
             </div>
           )}
         </form>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Attachments ({taskAttachments.length})</CardTitle>
+            {canEdit && <AttachmentUpload taskId={task.id} />}
+          </CardHeader>
+          <CardContent>
+            <ul className="flex flex-col gap-2">
+              {taskAttachments.map((a) => (
+                <li key={a.id} className="flex items-center gap-2 text-sm">
+                  <a href={`/api/attachments/${a.id}`} className="font-medium text-primary hover:underline">
+                    {a.fileName}
+                  </a>
+                  <span className="text-xs text-muted-foreground">
+                    {formatBytes(a.sizeBytes)} · {a.uploaderName ?? "—"}
+                  </span>
+                </li>
+              ))}
+              {taskAttachments.length === 0 && (
+                <li className="text-sm text-muted-foreground">No attachments.</li>
+              )}
+            </ul>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Comments ({taskComments.length})</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <ul className="flex flex-col gap-4">
+              {taskComments.map((c) => (
+                <li key={c.id} className="flex gap-3">
+                  <UserAvatar
+                    userId={c.authorId}
+                    name={c.authorName}
+                    hasPhoto={!!c.authorPhotoKey}
+                    className="size-7"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm">
+                      <span className="font-medium">{c.authorName}</span>{" "}
+                      <span className="text-xs text-muted-foreground">
+                        {c.createdAt.toISOString().slice(0, 16).replace("T", " ")}
+                      </span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm">
+                      {(c.body as { text?: string })?.text ?? ""}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <CommentBox taskId={task.id} users={activeUsers} />
+          </CardContent>
+        </Card>
 
         {canEdit && !task.isArchived && (
           <form action={archiveTask}>

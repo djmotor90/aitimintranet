@@ -13,6 +13,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { NavIcon, NavItem } from "@/modules/types";
 import { cn } from "@/lib/utils";
+import { NotificationBadge } from "./notification-badge";
 
 const ICONS: Record<NavIcon, LucideIcon> = {
   users: Users,
@@ -43,6 +44,7 @@ export function SidebarNav({ items }: { items: NavItem[] }) {
           >
             <Icon className="size-4" />
             {item.label}
+            {item.href === "/notifications" && <NotificationBadge />}
           </Link>
         );
       })}

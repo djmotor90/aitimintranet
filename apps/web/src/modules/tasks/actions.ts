@@ -14,6 +14,7 @@ import { valueSchemaFor, type CustomFieldDefinitionLike, type CustomFieldType } 
 import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { notifyUsers, pingListUpdate } from "@/lib/notify";
 import { assertSpaceRole, requireUser } from "@/lib/rbac";
 import { logActivity } from "./lib/activity";
 
@@ -298,6 +299,8 @@ export async function createTask(formData: FormData) {
 
   if (!list.defaultStatusId) throw new Error("List has no default status");
 
+  let createdTaskId: string | undefined;
+  let createdTaskNumber: string | undefined;
   await db.transaction(async (tx) => {
     const [counter] = await tx
       .update(spaceTaskCounters)
@@ -334,7 +337,20 @@ export async function createTask(formData: FormData) {
       verb: "task.created",
       payload: { title, number },
     });
+    createdTaskId = task.id;
+    createdTaskNumber = number;
   });
+
+  if (assigneeIds.length > 0 && createdTaskId) {
+    await notifyUsers({
+      recipientIds: assigneeIds,
+      type: "assigned",
+      taskId: createdTaskId,
+      actorId: user.id,
+      payload: { number: createdTaskNumber, title },
+    });
+  }
+  await pingListUpdate(listId);
   revalidatePath(listPath(space.slug, list.slug));
 }
 
@@ -367,6 +383,19 @@ export async function updateTaskStatus(taskId: string, statusId: string) {
       payload: { from: fromStatus?.name, to: toStatus.name },
     });
   });
+
+  const assignees = await db
+    .select({ userId: taskAssignees.userId })
+    .from(taskAssignees)
+    .where(eq(taskAssignees.taskId, taskId));
+  await notifyUsers({
+    recipientIds: assignees.map((a) => a.userId),
+    type: "status_changed",
+    taskId,
+    actorId: user.id,
+    payload: { from: fromStatus?.name, to: toStatus.name, number: task.number },
+  });
+  await pingListUpdate(task.listId);
   revalidatePath(listPath(space.slug, list.slug));
   revalidatePath(`/tasks/task/${task.number}`);
 }
@@ -467,6 +496,21 @@ export async function updateTaskCore(formData: FormData) {
       }
     }
   });
+
+  if (statusId !== task.statusId) {
+    const assignees = await db
+      .select({ userId: taskAssignees.userId })
+      .from(taskAssignees)
+      .where(eq(taskAssignees.taskId, taskId));
+    await notifyUsers({
+      recipientIds: assignees.map((a) => a.userId),
+      type: "status_changed",
+      taskId,
+      actorId: user.id,
+      payload: { to: toStatus.name, number: task.number },
+    });
+  }
+  await pingListUpdate(task.listId);
   revalidatePath(listPath(space.slug, list.slug));
   revalidatePath(`/tasks/task/${task.number}`);
 }
@@ -506,6 +550,16 @@ export async function toggleAssignee(formData: FormData) {
       });
     }
   });
+  if (existing.length === 0) {
+    await notifyUsers({
+      recipientIds: [userId],
+      type: "assigned",
+      taskId,
+      actorId: user.id,
+      payload: { number: task.number, title: task.title },
+    });
+  }
+  await pingListUpdate(task.listId);
   revalidatePath(listPath(space.slug, list.slug));
   revalidatePath(`/tasks/task/${task.number}`);
 }
@@ -527,4 +581,68 @@ export async function archiveTask(formData: FormData) {
     });
   });
   revalidatePath(listPath(space.slug, list.slug));
+}
+
+// ---------------------------------------------------------------- comments
+
+export async function addComment(formData: FormData) {
+  const taskId = z.string().uuid().parse(formData.get("taskId"));
+  const body = z.string().min(1).max(10_000).parse(formData.get("body"));
+  const mentionIds = formData.getAll("mentions").map((v) => z.string().uuid().parse(v));
+
+  const { task, list, space } = await requireTask(taskId);
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "guest"); // guests may comment
+
+  const { comments, commentMentions } = await import("@aitim/db");
+
+  await db.transaction(async (tx) => {
+    const [comment] = await tx
+      .insert(comments)
+      .values({ taskId, authorId: user.id, body: { text: body } })
+      .returning();
+    if (mentionIds.length > 0) {
+      await tx
+        .insert(commentMentions)
+        .values(mentionIds.map((userId) => ({ commentId: comment.id, userId })))
+        .onConflictDoNothing();
+    }
+    await logActivity(tx, {
+      spaceId: space.id,
+      taskId,
+      actorId: user.id,
+      verb: "comment.created",
+      payload: { preview: body.slice(0, 140) },
+    });
+  });
+
+  // Fan-out after commit: assignees + creator get "comment", mentions get "mentioned"
+  const assignees = await db
+    .select({ userId: taskAssignees.userId })
+    .from(taskAssignees)
+    .where(eq(taskAssignees.taskId, taskId));
+  const mentionSet = new Set(mentionIds);
+  const commentRecipients = [
+    ...assignees.map((a) => a.userId),
+    ...(task.createdBy ? [task.createdBy] : []),
+  ].filter((id) => !mentionSet.has(id));
+
+  const { notifyUsers } = await import("@/lib/notify");
+  const preview = body.slice(0, 140);
+  await notifyUsers({
+    recipientIds: commentRecipients,
+    type: "comment",
+    taskId,
+    actorId: user.id,
+    payload: { preview, number: task.number },
+  });
+  await notifyUsers({
+    recipientIds: mentionIds,
+    type: "mentioned",
+    taskId,
+    actorId: user.id,
+    payload: { preview, number: task.number },
+  });
+
+  revalidatePath(`/tasks/task/${task.number}`);
 }

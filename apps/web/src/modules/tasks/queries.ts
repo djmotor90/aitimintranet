@@ -120,3 +120,39 @@ export const getActiveUsers = cache(async () => {
     .where(eq(users.isActive, true))
     .orderBy(asc(users.displayName));
 });
+
+export async function getTaskComments(taskId: string) {
+  const { comments } = await import("@aitim/db");
+  const { isNull } = await import("drizzle-orm");
+  return db
+    .select({
+      id: comments.id,
+      body: comments.body,
+      createdAt: comments.createdAt,
+      editedAt: comments.editedAt,
+      authorId: comments.authorId,
+      authorName: users.displayName,
+      authorPhotoKey: users.photoKey,
+    })
+    .from(comments)
+    .innerJoin(users, eq(comments.authorId, users.id))
+    .where(and(eq(comments.taskId, taskId), isNull(comments.deletedAt)))
+    .orderBy(asc(comments.createdAt));
+}
+
+export async function getTaskAttachments(taskId: string) {
+  const { attachments } = await import("@aitim/db");
+  return db
+    .select({
+      id: attachments.id,
+      fileName: attachments.fileName,
+      mimeType: attachments.mimeType,
+      sizeBytes: attachments.sizeBytes,
+      createdAt: attachments.createdAt,
+      uploaderName: users.displayName,
+    })
+    .from(attachments)
+    .leftJoin(users, eq(attachments.uploaderId, users.id))
+    .where(eq(attachments.taskId, taskId))
+    .orderBy(asc(attachments.createdAt));
+}

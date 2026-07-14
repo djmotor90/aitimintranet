@@ -3,6 +3,7 @@
  * Dev: pnpm worker:dev · Prod: node dist/worker.js (same image as web)
  */
 import { PgBoss } from "pg-boss";
+import { runDueSoonScanner, sendNotificationEmail } from "./jobs/notifications";
 import { runSyncEntra, runSyncGroupCatalog } from "./jobs/sync-entra";
 import { runSyncPhotos } from "./jobs/sync-photos";
 
@@ -10,6 +11,8 @@ const QUEUES = {
   syncEntra: "sync-entra",
   syncPhotos: "sync-photos",
   syncGroupCatalog: "sync-group-catalog",
+  notificationEmail: "send-notification-email",
+  dueSoon: "due-soon-scanner",
 } as const;
 
 async function main() {
@@ -37,6 +40,16 @@ async function main() {
     if (!graphConfigured) throw new Error("Daemon credentials not configured");
     console.log("[sync-photos]", await runSyncPhotos());
   });
+
+  await boss.work<{ notificationId: string }>(QUEUES.notificationEmail, async ([job]) => {
+    console.log("[notification-email]", await sendNotificationEmail(job.data.notificationId));
+  });
+
+  await boss.work(QUEUES.dueSoon, async () => {
+    console.log("[due-soon]", await runDueSoonScanner());
+  });
+
+  await boss.schedule(QUEUES.dueSoon, "0 7 * * *"); // daily 07:00
 
   if (graphConfigured) {
     await boss.schedule(QUEUES.syncEntra, "*/30 * * * *"); // every 30 min
