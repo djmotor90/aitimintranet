@@ -20,6 +20,8 @@ declare module "next-auth/jwt" {
     refreshToken?: string;
     /** Epoch seconds */
     expiresAt?: number;
+    /** Epoch millis of last DB role re-check */
+    roleCheckedAt?: number;
     error?: "RefreshTokenError";
   }
 }

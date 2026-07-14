@@ -111,6 +111,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
         token.expiresAt = account.expires_at;
+        token.roleCheckedAt = Date.now();
         return token;
       }
       // Initial sign-in via dev credentials
@@ -120,11 +121,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const [row] = await db.select().from(users).where(eq(users.id, user.id!));
         token.userId = row.id;
         token.platformRole = row.platformRole;
+        token.roleCheckedAt = Date.now();
         return token;
       }
       // Subsequent requests: refresh the Graph token if expired
       if (token.refreshToken && token.expiresAt && Date.now() / 1000 > token.expiresAt - 60) {
-        return refreshAccessToken(token);
+        token = await refreshAccessToken(token);
+      }
+      // Re-read role/active status from DB every 5 minutes so promotions,
+      // group-mapping syncs, and deactivations reach live sessions.
+      const now = Date.now();
+      if (token.userId && (!token.roleCheckedAt || now - token.roleCheckedAt > 5 * 60_000)) {
+        const { db, users } = await import("@aitim/db");
+        const { eq } = await import("drizzle-orm");
+        const [row] = await db
+          .select({ platformRole: users.platformRole, isActive: users.isActive })
+          .from(users)
+          .where(eq(users.id, token.userId));
+        if (!row || !row.isActive) return { ...token, error: "RefreshTokenError", userId: undefined };
+        token.platformRole = row.platformRole;
+        token.roleCheckedAt = now;
       }
       return token;
     },

@@ -2,11 +2,15 @@ import { db, spaces } from "@aitim/db";
 import { eq } from "drizzle-orm";
 import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { requireUser } from "@/lib/rbac";
+import { getSpaceRole, requireUser } from "@/lib/rbac";
 
 export default async function TasksHomePage() {
-  await requireUser();
-  const allSpaces = await db.select().from(spaces).where(eq(spaces.isArchived, false));
+  const user = await requireUser();
+  const candidates = await db.select().from(spaces).where(eq(spaces.isArchived, false));
+  const roles = await Promise.all(
+    candidates.map((s) => getSpaceRole(user.id, s.id, user.platformRole)),
+  );
+  const allSpaces = candidates.filter((_, i) => roles[i] !== null);
 
   return (
     <div className="mx-auto max-w-4xl">
