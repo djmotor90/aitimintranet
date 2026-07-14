@@ -1,0 +1,25 @@
+{
+  "name": "aitim-intranet",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "worker:dev": "pnpm --filter web worker:dev",
+    "db:generate": "pnpm --filter @aitim/db generate",
+    "db:migrate": "pnpm --filter @aitim/db migrate",
+    "db:seed": "pnpm --filter @aitim/db seed",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}
