@@ -4,8 +4,8 @@
 #   web:    ./entrypoint.sh          → runs migrations then Next.js standalone
 #   worker: node dist/worker.js      → pg-boss background consumers
 #
-# Build context: repo root
-# Coolify Dockerfile path: docker/Dockerfile
+# Lives at repo root so Coolify's defaults work (Build Pack: Dockerfile,
+# Base Directory / Dockerfile Location left blank).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 1. base ──────────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ COPY --from=builder --chown=app:app /app/packages/db/dist/migrate.cjs ./migrate.
 COPY --from=builder --chown=app:app /app/apps/web/dist/worker.js   ./dist/worker.js
 
 # Entrypoint script
-COPY --chown=app:app docker/entrypoint.sh ./entrypoint.sh
+COPY --chown=app:app entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
 USER app

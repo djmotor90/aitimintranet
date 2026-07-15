@@ -40,26 +40,16 @@ pnpm worker:dev      # background worker          (sync, emails, due-soon)
 ## Structure
 
 ```
-apps/web          Next.js app (shell + modules in src/modules/*)
-packages/db       Drizzle schema, migrations, seed
-packages/shared   Zod schemas, custom-field type registry
-docker/           Dockerfile (prod), docker-compose.dev.yml
-docs/             entra-setup.md, coolify.md
+apps/web             Next.js app (shell + modules in src/modules/*)
+packages/db          Drizzle schema, migrations, seed
+packages/shared      Zod schemas, custom-field type registry
+docker/              docker-compose.dev.yml (postgres, minio, mailpit)
+docs/                entra-setup.md, coolify.md
+Dockerfile           production build (Coolify-compatible defaults)
+entrypoint.sh        production entrypoint (runs migrations then server)
 ```
 
 ## Docs
 
 - [Entra ID app registration setup](docs/entra-setup.md)
-- [Coolify deployment](docs/coolify.md) — **set Dockerfile Location to `docker/Dockerfile`**
-
-### Common deployment issues
-
-Fix these in your service → **Build** settings:
-
-| Coolify error | Cause | Fix |
-|---|---|---|
-| `open Dockerfile: no such file or directory` | Dockerfile Location is blank or wrong | Set **Dockerfile Location = `docker/Dockerfile`** |
-| `"/apps/web/package.json": not found` (and similar) | **Base Directory** is set to `/docker` (or any non-empty value) | **Leave Base Directory empty** — only use the Dockerfile Location field |
-
-After fixing, redeploy. The local equivalent that we test against is
-`docker build -f docker/Dockerfile .` from the repo root.
+- [Coolify deployment](docs/coolify.md) — works with all default settings

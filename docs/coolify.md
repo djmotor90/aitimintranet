@@ -6,31 +6,25 @@ One Coolify project, four resources on a shared network:
 |---|---|---|
 | `postgres` | Coolify PostgreSQL 17 | Persistent volume; enable scheduled backups |
 | `minio` | Coolify MinIO | Create buckets `attachments`, `photos`; keep console internal |
-| `intranet-web` | App (Dockerfile) | Build from repo, `docker/Dockerfile`; default CMD runs migrations then the server |
+| `intranet-web` | App (Dockerfile) | Build from repo; default CMD runs migrations then the server |
 | `intranet-worker` | App (same Dockerfile) | Override start command: `node dist/worker.js`; no public domain |
 
 ## Web service
 
-> ⚠️ The production `Dockerfile` lives at **`docker/Dockerfile`** (not the repo root).
-> In Coolify's service settings you **must** set the Dockerfile path explicitly,
-> otherwise deployment fails with `failed to read dockerfile: open Dockerfile: no such file or directory`.
-
-**Build configuration in Coolify:**
+The production `Dockerfile` lives at the **repo root**, so Coolify works with
+all defaults:
 
 | Setting | Value |
 |---|---|
 | Build Pack | `Dockerfile` |
-| **Dockerfile Location** | **`docker/Dockerfile`** (no leading slash) |
-| **Base Directory** | **leave empty** (defaults to repo root) |
-
-> ⚠️ Do **not** set Base Directory to `/docker` or `docker/`. Coolify prepends the
-> Base Directory to every path, so the build context becomes `docker/` and
-> `COPY apps/web/package.json` fails with `"/apps/web/package.json": not found`.
-> Leave Base Directory blank and use only the **Dockerfile Location** field.
+| Base Directory | *(empty — defaults to repo root)* |
+| Dockerfile Location | *(empty — defaults to `Dockerfile`)* |
 
 - **Domain:** `intranet.<your-domain>` (Coolify/Traefik handles TLS)
 - **Healthcheck:** `GET /api/health`
 - **Port:** 3000
+
+The local equivalent is `docker build .` from the repo root.
 
 ## Environment variables (both services)
 
