@@ -54,13 +54,12 @@ docs/             entra-setup.md, coolify.md
 
 ### Common deployment issues
 
-Both happen because Coolify's defaults don't match the repo layout — fix them in your
-service → **Build** settings:
+Fix these in your service → **Build** settings:
 
 | Coolify error | Cause | Fix |
 |---|---|---|
-| `open Dockerfile: no such file or directory` | Dockerfile Location is blank | Set **Dockerfile Location = `docker/Dockerfile`** |
-| `"/apps/web/package.json": not found` (and similar) | Build Context defaults to `docker/` (the Dockerfile's parent dir) | Set **Build Context = `.`** (repo root) |
+| `open Dockerfile: no such file or directory` | Dockerfile Location is blank or wrong | Set **Dockerfile Location = `docker/Dockerfile`** |
+| `"/apps/web/package.json": not found` (and similar) | **Base Directory** is set to `/docker` (or any non-empty value) | **Leave Base Directory empty** — only use the Dockerfile Location field |
 
-After changing both, redeploy. The local equivalent that we test against is
+After fixing, redeploy. The local equivalent that we test against is
 `docker build -f docker/Dockerfile .` from the repo root.
