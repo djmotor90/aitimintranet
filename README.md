@@ -13,15 +13,29 @@ pg-boss · MinIO · Tailwind v4 + shadcn/ui · deployed on Coolify.
 
 ```bash
 pnpm install
-docker compose -f docker/docker-compose.dev.yml up -d   # postgres, minio, mailpit
-cp .env.example .env                                     # fill in Entra credentials
+cp .env.example .env   # fill in Entra credentials
 pnpm db:migrate
 pnpm db:seed
-pnpm dev                                                 # http://localhost:3000
+
+# One command — boots infrastructure, web app, and background worker together
+pnpm dev:all          # http://localhost:3000  (Ctrl-C to stop everything)
+```
+
+The logs are prefixed by service: `[infra]`, `[web]`, `[worker]`.
+
+### Granular scripts
+
+If you'd rather run pieces individually (e.g. when developing a single service):
+
+```bash
+pnpm dev:infra       # postgres + minio + mailpit  (foreground)
+pnpm dev             # Next.js only                → http://localhost:3000
+pnpm worker:dev      # background worker          (sync, emails, due-soon)
 ```
 
 - Mailpit UI (captured dev email): http://localhost:8025
 - MinIO console: http://localhost:9001 (aitim / aitim-dev-secret)
+- `pnpm dev:infra:down` to stop and remove the dev containers
 
 ## Structure
 

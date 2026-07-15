@@ -3,13 +3,17 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --filter web dev",
-    "build": "pnpm --filter web build",
     "worker:dev": "pnpm --filter web worker:dev",
+    "build": "pnpm --filter web build",
     "db:generate": "pnpm --filter @aitim/db generate",
     "db:migrate": "pnpm --filter @aitim/db migrate",
     "db:seed": "pnpm --filter @aitim/db seed",
     "lint": "pnpm -r lint",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "dev:infra": "docker compose -f docker/docker-compose.dev.yml up",
+    "dev:infra:down": "docker compose -f docker/docker-compose.dev.yml down",
+    "dev:app": "concurrently -k -n web,worker -c blue,magenta \"pnpm dev\" \"pnpm worker:dev\"",
+    "dev:all": "concurrently -k -n infra,web,worker -c green,blue,magenta \"pnpm dev:infra\" \"pnpm dev\" \"pnpm worker:dev\""
   },
   "engines": {
     "node": ">=22"
@@ -21,5 +25,8 @@
       "sharp",
       "unrs-resolver"
     ]
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
   }
 }
