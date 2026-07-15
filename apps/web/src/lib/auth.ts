@@ -7,6 +7,20 @@ const GRAPH_SCOPES = "openid profile email offline_access User.Read Presence.Rea
 
 const devAuthEnabled = process.env.DEV_AUTH === "true" && process.env.NODE_ENV !== "production";
 
+// Fail loudly in production if AUTH_URL is missing. Without it, Auth.js falls
+// back to deriving the OAuth redirect_uri from request headers, which behind
+// some reverse-proxy misconfigurations yields the internal container hostname
+// (e.g. https://8d202286fcb1:3000/...) and breaks sign-in with OAuthCallbackError.
+if (process.env.NODE_ENV === "production" && !process.env.AUTH_URL) {
+  // eslint-disable-next-line no-console
+  console.error(
+    "\n[FATAL] AUTH_URL is not set. In production, AUTH_URL must be the public\n" +
+      "        canonical URL of the app (e.g. https://intranet.apps.aitim.ai).\n" +
+      "        Without it, OAuth callbacks use the wrong host and sign-in fails.\n",
+  );
+  throw new Error("AUTH_URL is required in production. See docs/coolify.md.");
+}
+
 /** Upsert the signing-in Entra user and return our internal row. Lazy db import keeps proxy bundle light. */
 async function provisionUser(profile: {
   oid: string;
