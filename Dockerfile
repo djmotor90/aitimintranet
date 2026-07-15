@@ -43,8 +43,10 @@ RUN pnpm --filter web build \
 FROM node:22-alpine AS runner
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
-    PORT=3000 \
-    HOSTNAME=0.0.0.0
+    PORT=3000
+# NOTE: do NOT set HOSTNAME here. Next.js reads it to build absolute URLs,
+# which Auth.js then uses as the OAuth redirect_uri base. Behind a reverse
+# proxy we want the request's Host header (via X-Forwarded-Host) to win.
 
 RUN addgroup -S app && adduser -S app -G app
 
