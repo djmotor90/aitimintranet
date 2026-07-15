@@ -7,11 +7,21 @@ const GRAPH_SCOPES = "openid profile email offline_access User.Read Presence.Rea
 
 const devAuthEnabled = process.env.DEV_AUTH === "true" && process.env.NODE_ENV !== "production";
 
-// Fail loudly in production if AUTH_URL is missing. Without it, Auth.js falls
-// back to deriving the OAuth redirect_uri from request headers, which behind
-// some reverse-proxy misconfigurations yields the internal container hostname
-// (e.g. https://8d202286fcb1:3000/...) and breaks sign-in with OAuthCallbackError.
-if (process.env.NODE_ENV === "production" && !process.env.AUTH_URL) {
+// Fail loudly at RUNTIME if AUTH_URL is missing in production. Without it,
+// Auth.js falls back to deriving the OAuth redirect_uri from request headers,
+// which behind some reverse-proxy misconfigurations yields the internal
+// container hostname (e.g. https://8d202286fcb1:3000/...) and breaks sign-in
+// with OAuthCallbackError.
+//
+// We only check at runtime (NEXT_RUNTIME is set by the standalone server, not
+// during `next build` which sets NEXT_PHASE) so the guard doesn't break
+// production builds where Coolify may inject env vars at runtime only.
+if (
+  process.env.NODE_ENV === "production" &&
+  process.env.NEXT_RUNTIME !== undefined &&
+  process.env.NEXT_PHASE === undefined &&
+  !process.env.AUTH_URL
+) {
   // eslint-disable-next-line no-console
   console.error(
     "\n[FATAL] AUTH_URL is not set. In production, AUTH_URL must be the public\n" +
