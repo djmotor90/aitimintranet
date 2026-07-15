@@ -31,6 +31,7 @@ The local equivalent is `docker build .` from the repo root.
 ```
 APP_BASE_URL=https://intranet.<your-domain>
 DATABASE_URL=postgres://...   # internal Coolify postgres URL
+AUTH_URL=https://intranet.<your-domain>   # MUST match public domain; pins OAuth redirect_uri
 AUTH_SECRET=                  # openssl rand -base64 32
 AUTH_TRUST_HOST=true
 AUTH_MICROSOFT_ENTRA_ID_ID=
@@ -50,6 +51,20 @@ S3_FORCE_PATH_STYLE=true
 TURNSTILE_SITE_KEY=
 TURNSTILE_SECRET_KEY=
 ```
+
+## Troubleshooting: OAuthCallbackError with container hostname
+
+If `/login?error=OAuthCallbackError` shows a callback URL containing the
+container ID instead of your domain (e.g. `https://8d202286fcb1:3000/...`),
+the request reached Auth.js without a proper `Host` / `X-Forwarded-Host`
+header. Two fixes:
+
+1. **Set `AUTH_URL`** to your public domain (see env vars above). Auth.js
+   v5 uses this as the canonical URL and ignores the headers entirely.
+2. **Verify Coolify's proxy is in front of the service** — the `Domains`
+   field must be attached, and the service must be on the same Docker
+   network as Traefik. A quick test: `curl -H 'Host: intranet.<domain>'
+   http://<service-ip>:3000/api/health` should return 200.
 
 ## Migrations
 
