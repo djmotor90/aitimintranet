@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Lint, typecheck & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Required at build time for Next.js / Auth.js; values don't need to be real for CI
+      AUTH_SECRET: ci-placeholder-auth-secret-not-used-at-runtime
+      AUTH_MICROSOFT_ENTRA_ID_ID: ci-placeholder
+      AUTH_MICROSOFT_ENTRA_ID_SECRET: ci-placeholder
+      AUTH_MICROSOFT_ENTRA_ID_ISSUER: https://login.microsoftonline.com/common/v2.0
+      DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+      STORAGE_ENDPOINT: http://localhost
+      STORAGE_BUCKET: ci
+      STORAGE_ACCESS_KEY: ci
+      STORAGE_SECRET_KEY: ci
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm -r exec tsc --noEmit
+
+      - name: Build
+        run: pnpm build
