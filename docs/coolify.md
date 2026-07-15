@@ -11,7 +11,18 @@ One Coolify project, four resources on a shared network:
 
 ## Web service
 
-- **Build:** Dockerfile path `docker/Dockerfile`, context = repo root
+> ⚠️ The production `Dockerfile` lives at **`docker/Dockerfile`** (not the repo root).
+> In Coolify's service settings you **must** set the Dockerfile path explicitly,
+> otherwise deployment fails with `failed to read dockerfile: open Dockerfile: no such file or directory`.
+
+**Build configuration in Coolify:**
+
+| Setting | Value |
+|---|---|
+| Build Pack | `Dockerfile` |
+| **Dockerfile Location** | **`docker/Dockerfile`** ← required, do not leave blank |
+| Build Context | repo root (default — leave as `.`) |
+
 - **Domain:** `intranet.<your-domain>` (Coolify/Traefik handles TLS)
 - **Healthcheck:** `GET /api/health`
 - **Port:** 3000

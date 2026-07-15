@@ -50,4 +50,10 @@ docs/             entra-setup.md, coolify.md
 ## Docs
 
 - [Entra ID app registration setup](docs/entra-setup.md)
-- [Coolify deployment](docs/coolify.md)
+- [Coolify deployment](docs/coolify.md) — **set Dockerfile Location to `docker/Dockerfile`**
+
+### Common deployment issue
+
+If Coolify fails with `failed to read dockerfile: open Dockerfile: no such file or directory`,
+the Dockerfile path is empty. In your service → **Build** settings, set **Dockerfile Location**
+to `docker/Dockerfile` and redeploy.
