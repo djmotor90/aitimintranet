@@ -2,7 +2,7 @@ name: aitim-intranet-dev
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: aitim
       POSTGRES_PASSWORD: aitim
@@ -10,7 +10,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres:18+ images keep data in a versioned subdir under /var/lib/postgresql
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aitim -d aitim_intranet"]
       interval: 5s
