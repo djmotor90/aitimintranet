@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpaceRole, requireUser } from "@/lib/rbac";
 import { archiveTask, updateTaskCore } from "@/modules/tasks/actions";
@@ -17,6 +18,7 @@ import { AssigneeSelect } from "@/modules/tasks/components/assignee-select";
 import { CommentBox } from "@/modules/tasks/components/comment-box";
 import { CustomFieldInput } from "@/modules/tasks/components/custom-field-input";
 import { TaskDetailShell } from "@/modules/tasks/components/task-detail-shell";
+import { defaultLayout, type TaskLayout } from "@/modules/tasks/layout-types";
 import {
   getActiveUsers,
   getFieldDefinitions,
@@ -112,6 +114,8 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   const assigneeIds = new Set(assigneeRows.map((r) => r.userId));
   const cf = (task.customFields ?? {}) as Record<string, unknown>;
   const description = (task.description as { text?: string } | null)?.text ?? "";
+  const savedLayout = list.taskLayout as TaskLayout | null;
+  const layout = savedLayout ?? defaultLayout(fieldDefs);
   const timelineItems = [
     ...activity
       .filter((a) => a.verb !== "comment.created")
@@ -215,8 +219,10 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
           )}
         </div>
 
-        <form action={updateTaskCore} className="flex flex-col gap-4">
+        <form action={updateTaskCore} className="flex flex-col gap-5">
           <input type="hidden" name="taskId" value={task.id} />
+
+          {/* title — always fixed at the top */}
           <Input
             name="title"
             defaultValue={task.title}
@@ -224,72 +230,113 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
             disabled={!canEdit}
             className="text-lg font-semibold"
           />
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="statusId">Status</Label>
-              <select
-                id="statusId"
-                name="statusId"
-                defaultValue={task.statusId}
-                disabled={!canEdit}
-                className="h-9 rounded-md border bg-transparent px-3 text-sm"
+
+          {/* layout-driven field groups */}
+          {layout.groups.map((group, gi) => (
+            <div key={group.id} className="flex flex-col gap-3 rounded-lg border p-4">
+              {group.label && (
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {group.label}
+                </p>
+              )}
+              <div
+                className={
+                  group.columns === 3
+                    ? "grid gap-3 sm:grid-cols-3"
+                    : group.columns === 2
+                      ? "grid gap-3 sm:grid-cols-2"
+                      : "flex flex-col gap-3"
+                }
               >
-                {listStatuses.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
+                {group.fields.map(({ id: fieldId }) => {
+                  if (fieldId === "status") return (
+                    <div key="status" className="flex flex-col gap-1.5">
+                      <Label htmlFor="statusId">Status</Label>
+                      <select
+                        id="statusId"
+                        name="statusId"
+                        defaultValue={task.statusId}
+                        disabled={!canEdit}
+                        className="h-9 rounded-md border bg-transparent px-3 text-sm"
+                      >
+                        {listStatuses.map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                  if (fieldId === "priority") return (
+                    <div key="priority" className="flex flex-col gap-1.5">
+                      <Label htmlFor="priority">Priority</Label>
+                      <select
+                        id="priority"
+                        name="priority"
+                        defaultValue={task.priority ?? ""}
+                        disabled={!canEdit}
+                        className="h-9 rounded-md border bg-transparent px-3 text-sm"
+                      >
+                        <option value="">—</option>
+                        <option value="urgent">Urgent</option>
+                        <option value="high">High</option>
+                        <option value="normal">Normal</option>
+                        <option value="low">Low</option>
+                      </select>
+                    </div>
+                  );
+                  if (fieldId === "due_date") return (
+                    <div key="due_date" className="flex flex-col gap-1.5">
+                      <Label htmlFor="dueDate">Due date</Label>
+                      <Input
+                        id="dueDate"
+                        name="dueDate"
+                        type="date"
+                        defaultValue={task.dueDate ?? ""}
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  );
+                  if (fieldId === "assignees") return (
+                    <div key="assignees" className="flex flex-col gap-1.5">
+                      <Label>Assignees</Label>
+                      <AssigneeSelect
+                        taskId={task.id}
+                        users={activeUsers}
+                        selectedIds={[...assigneeIds]}
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  );
+                  if (fieldId === "description") return (
+                    <div key="description" className="flex flex-col gap-1.5">
+                      <Label htmlFor="description">Description</Label>
+                      <Textarea
+                        id="description"
+                        name="description"
+                        rows={4}
+                        defaultValue={description}
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  );
+                  if (fieldId.startsWith("cf_")) {
+                    const defId = fieldId.slice(3);
+                    const def = fieldDefs.find((d) => d.id === defId);
+                    if (!def) return null;
+                    return (
+                      <CustomFieldInput
+                        key={fieldId}
+                        def={def}
+                        users={activeUsers}
+                        defaultValue={cf[defId]}
+                      />
+                    );
+                  }
+                  return null;
+                })}
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="priority">Priority</Label>
-              <select
-                id="priority"
-                name="priority"
-                defaultValue={task.priority ?? ""}
-                disabled={!canEdit}
-                className="h-9 rounded-md border bg-transparent px-3 text-sm"
-              >
-                <option value="">—</option>
-                <option value="urgent">Urgent</option>
-                <option value="high">High</option>
-                <option value="normal">Normal</option>
-                <option value="low">Low</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="dueDate">Due date</Label>
-              <Input
-                id="dueDate"
-                name="dueDate"
-                type="date"
-                defaultValue={task.dueDate ?? ""}
-                disabled={!canEdit}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Assignees</Label>
-              <AssigneeSelect
-                taskId={task.id}
-                users={activeUsers}
-                selectedIds={[...assigneeIds]}
-                disabled={!canEdit}
-              />
-            </div>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="description">Description</Label>
-            <Textarea
-              id="description"
-              name="description"
-              rows={5}
-              defaultValue={description}
-              disabled={!canEdit}
-            />
-          </div>
-          {fieldDefs.map((def) => (
-            <CustomFieldInput key={def.id} def={def} users={activeUsers} defaultValue={cf[def.id]} />
           ))}
+
           {canEdit && (
             <div className="flex gap-2">
               <Button type="submit">Save changes</Button>

@@ -1,0 +1,30 @@
+# version control
+.git
+.gitignore
+.gitattributes
+
+# env files (injected by Coolify at runtime)
+.env
+.env.*
+!.env.example
+
+# local node_modules — reinstalled inside the image
+node_modules
+**/node_modules
+
+# build artefacts
+.next
+**/.next
+dist
+**/dist
+
+# dev tooling
+docker/docker-compose*.yml
+*.log
+.DS_Store
+.turbo
+
+# editor
+.vscode
+.idea
+*.swp

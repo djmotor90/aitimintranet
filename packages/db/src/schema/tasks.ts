@@ -114,6 +114,7 @@ export const lists = pgTable(
     position: text("position").notNull().default("a0"),
     defaultStatusId: uuid("default_status_id"),
     isArchived: boolean("is_archived").notNull().default(false),
+    taskLayout: jsonb("task_layout"),
     ...timestamps,
   },
   (t) => [uniqueIndex("lists_space_slug_idx").on(t.spaceId, t.slug)],

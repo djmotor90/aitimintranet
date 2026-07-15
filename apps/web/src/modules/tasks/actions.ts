@@ -646,3 +646,18 @@ export async function addComment(formData: FormData) {
 
   revalidatePath(`/tasks/task/${task.number}`);
 }
+
+export async function saveTaskLayout(
+  listId: string,
+  layout: import("./layout-types").TaskLayout,
+) {
+  "use server";
+  await requireUser();
+  const { list, space } = await requireList(listId);
+  await assertSpaceRole(space.id, "owner");
+
+  await db.update(lists).set({ taskLayout: layout }).where(eq(lists.id, list.id));
+
+  revalidatePath(`/tasks/${space.slug}/${list.slug}`);
+  revalidatePath(`${listPath(space.slug, list.slug)}/settings`);
+}
