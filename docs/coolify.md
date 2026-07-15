@@ -21,7 +21,12 @@ One Coolify project, four resources on a shared network:
 |---|---|
 | Build Pack | `Dockerfile` |
 | **Dockerfile Location** | **`docker/Dockerfile`** ← required, do not leave blank |
-| Build Context | repo root (default — leave as `.`) |
+| **Build Context / Base Directory** | **`.`** (repo root) ← **required**, do not leave blank |
+
+> ⚠️ Coolify's default Build Context is the **parent directory of the Dockerfile**
+> (i.e. `docker/`). If left blank, the build will fail with errors like
+> `"/apps/web/package.json": not found` because the context only contains the
+> `Dockerfile` itself, not your source. Always set **Build Context = `.`**.
 
 - **Domain:** `intranet.<your-domain>` (Coolify/Traefik handles TLS)
 - **Healthcheck:** `GET /api/health`
