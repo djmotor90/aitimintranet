@@ -7,6 +7,7 @@
     "build": "next build",
     "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --format=cjs --external:pg-native --outfile=dist/worker.js",
     "worker:dev": "tsx watch --env-file=.env src/worker/index.ts",
+    "sync:run": "tsx --env-file=.env src/worker/run-sync.ts",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit"

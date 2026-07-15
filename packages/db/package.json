@@ -13,6 +13,7 @@
     "generate": "drizzle-kit generate",
     "migrate": "drizzle-kit migrate",
     "seed": "tsx src/seed.ts",
+    "seed:sample": "tsx src/seed-sample.ts",
     "build:migrator": "esbuild src/migrate.ts --bundle --platform=node --format=cjs --outfile=dist/migrate.cjs",
     "studio": "drizzle-kit studio"
   },
