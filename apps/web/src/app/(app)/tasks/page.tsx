@@ -13,9 +13,9 @@ export default async function TasksHomePage() {
   const allSpaces = candidates.filter((_, i) => roles[i] !== null);
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="w-full">
       <h1 className="mb-4 text-2xl font-semibold">Tasks</h1>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {allSpaces.map((s) => (
           <Link key={s.id} href={`/tasks/${s.slug}`}>
             <Card className="transition-colors hover:bg-muted/50">

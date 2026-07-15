@@ -13,11 +13,13 @@ import {
 import { signOut } from "@/lib/auth";
 import { requireUser } from "@/lib/rbac";
 import { adminNavItems, navItemsFor } from "@/modules/registry";
+import { getTaskNavTreeForUser } from "@/modules/tasks/queries";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const items = [{ label: "Home", href: "/", icon: "home" as const }, ...navItemsFor(user)];
   const adminItems = user.platformRole === "admin" ? adminNavItems() : [];
+  const taskNavTree = await getTaskNavTreeForUser(user);
 
   return (
     <div className="flex min-h-svh">
@@ -25,7 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <Link href="/" className="mb-6 px-3 text-lg font-semibold tracking-tight">
           AITIM <span className="text-muted-foreground">Intranet</span>
         </Link>
-        <SidebarNav items={items} />
+        <SidebarNav items={items} taskNavTree={taskNavTree} />
         {adminItems.length > 0 && (
           <>
             <div className="mt-6 mb-2 px-3 text-xs font-semibold uppercase text-muted-foreground">
@@ -61,7 +63,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </DropdownMenu>
         </div>
       </aside>
-      <main className="flex-1 overflow-x-auto p-6">{children}</main>
+      <main className="min-w-0 flex-1 overflow-x-auto p-6">{children}</main>
     </div>
   );
 }

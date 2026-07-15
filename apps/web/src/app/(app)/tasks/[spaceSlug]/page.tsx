@@ -18,7 +18,7 @@ export default async function SpacePage(props: { params: Promise<{ spaceSlug: st
   const spaceLists = await getListsForSpace(space.id);
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="w-full">
       <h1 className="mb-1 text-2xl font-semibold" style={space.color ? { color: space.color } : undefined}>
         {space.name}
       </h1>
@@ -26,7 +26,7 @@ export default async function SpacePage(props: { params: Promise<{ spaceSlug: st
         Space · prefix {space.taskPrefix} · your role: {role}
       </p>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {spaceLists.map((list) => (
           <Link key={list.id} href={`/tasks/${space.slug}/${list.slug}`}>
             <Card className="transition-colors hover:bg-muted/50">

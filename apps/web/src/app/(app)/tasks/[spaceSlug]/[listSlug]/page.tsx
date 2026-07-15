@@ -23,7 +23,7 @@ export default async function ListPage(props: {
 }) {
   const { spaceSlug, listSlug } = await props.params;
   const sp = await props.searchParams;
-  const view = sp.view === "table" ? "table" : "board";
+  const view = sp.view === "board" ? "board" : "table";
 
   const user = await requireUser();
   const space = await getSpaceBySlug(spaceSlug);
@@ -86,14 +86,14 @@ export default async function ListPage(props: {
         <Badge variant="secondary">{filtered.length} tasks</Badge>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex rounded-md border p-0.5">
-            <Link href={`?${new URLSearchParams({ ...Object.fromEntries(baseParams) }).toString()}`}>
+            <Link
+              href={`?${new URLSearchParams({ ...Object.fromEntries(baseParams), view: "board" }).toString()}`}
+            >
               <Button variant={view === "board" ? "secondary" : "ghost"} size="sm">
                 Board
               </Button>
             </Link>
-            <Link
-              href={`?${new URLSearchParams({ ...Object.fromEntries(baseParams), view: "table" }).toString()}`}
-            >
+            <Link href={`?${new URLSearchParams({ ...Object.fromEntries(baseParams) }).toString()}`}>
               <Button variant={view === "table" ? "secondary" : "ghost"} size="sm">
                 Table
               </Button>
@@ -111,7 +111,7 @@ export default async function ListPage(props: {
       </div>
 
       <form className="mb-4 flex flex-wrap items-center gap-2" method="GET">
-        {view === "table" && <input type="hidden" name="view" value="table" />}
+        {view === "board" && <input type="hidden" name="view" value="board" />}
         <select
           name="status"
           defaultValue={filterStatus ?? ""}

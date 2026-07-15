@@ -11,6 +11,8 @@ import {
 } from "@aitim/db";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { cache } from "react";
+import { getSpaceRole } from "@/lib/rbac";
+import type { SessionUserLike } from "../types";
 
 export const getSpaceBySlug = cache(async (slug: string) => {
   const [space] = await db
@@ -27,6 +29,56 @@ export const getListsForSpace = cache(async (spaceId: string) => {
     .where(and(eq(lists.spaceId, spaceId), eq(lists.isArchived, false)))
     .orderBy(asc(lists.position), asc(lists.createdAt));
 });
+
+export async function getTaskNavTreeForUser(user: SessionUserLike) {
+  const candidateSpaces = await db
+    .select({
+      id: spaces.id,
+      name: spaces.name,
+      slug: spaces.slug,
+      color: spaces.color,
+    })
+    .from(spaces)
+    .where(eq(spaces.isArchived, false))
+    .orderBy(asc(spaces.name));
+
+  const roles = await Promise.all(
+    candidateSpaces.map((space) => getSpaceRole(user.id, space.id, user.platformRole)),
+  );
+  const visibleSpaces = candidateSpaces.filter((_, index) => roles[index] !== null);
+  if (visibleSpaces.length === 0) return [];
+
+  const listRows = await db
+    .select({
+      id: lists.id,
+      spaceId: lists.spaceId,
+      name: lists.name,
+      slug: lists.slug,
+    })
+    .from(lists)
+    .where(
+      and(
+        eq(lists.isArchived, false),
+        inArray(
+          lists.spaceId,
+          visibleSpaces.map((space) => space.id),
+        ),
+      ),
+    )
+    .orderBy(asc(lists.position), asc(lists.createdAt));
+
+  const listsBySpace = new Map<string, typeof listRows>();
+  for (const list of listRows) {
+    const current = listsBySpace.get(list.spaceId) ?? [];
+    current.push(list);
+    listsBySpace.set(list.spaceId, current);
+  }
+
+  return visibleSpaces.map((space) => ({
+    ...space,
+    lists: listsBySpace.get(space.id) ?? [],
+  }));
+}
 
 export const getListBySlug = cache(async (spaceId: string, slug: string) => {
   const [list] = await db
@@ -102,9 +154,11 @@ export async function getTaskActivity(taskId: string, limit = 50) {
       id: activityLog.id,
       verb: activityLog.verb,
       payload: activityLog.payload,
+      actorId: activityLog.actorId,
       actorLabel: activityLog.actorLabel,
       createdAt: activityLog.createdAt,
       actorName: users.displayName,
+      actorPhotoKey: users.photoKey,
     })
     .from(activityLog)
     .leftJoin(users, eq(activityLog.actorId, users.id))

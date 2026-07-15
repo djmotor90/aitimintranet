@@ -132,15 +132,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // group-mapping syncs, and deactivations reach live sessions.
       const now = Date.now();
       if (token.userId && (!token.roleCheckedAt || now - token.roleCheckedAt > 5 * 60_000)) {
-        const { db, users } = await import("@aitim/db");
-        const { eq } = await import("drizzle-orm");
-        const [row] = await db
-          .select({ platformRole: users.platformRole, isActive: users.isActive })
-          .from(users)
-          .where(eq(users.id, token.userId));
-        if (!row || !row.isActive) return { ...token, error: "RefreshTokenError", userId: undefined };
-        token.platformRole = row.platformRole;
-        token.roleCheckedAt = now;
+        try {
+          const { db, users } = await import("@aitim/db");
+          const { eq } = await import("drizzle-orm");
+          const [row] = await db
+            .select({ platformRole: users.platformRole, isActive: users.isActive })
+            .from(users)
+            .where(eq(users.id, token.userId));
+          // User deleted or deactivated: invalidate the session.
+          if (!row || !row.isActive) return { ...token, userId: undefined };
+          token.platformRole = row.platformRole;
+          token.roleCheckedAt = now;
+        } catch (err) {
+          // Transient DB issue: keep the existing role rather than dropping the session.
+          console.error("Session role refresh failed", err);
+        }
       }
       return token;
     },
@@ -161,7 +167,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         pathname.startsWith("/api/auth/") ||
         pathname.startsWith("/api/health");
       if (isPublic) return true;
-      return !!session?.user;
+      // Require a resolvable internal user id — a session whose user no longer
+      // exists (e.g. after a DB rebuild) must land on /login, not loop.
+      return !!session?.user?.id;
     },
   },
 });

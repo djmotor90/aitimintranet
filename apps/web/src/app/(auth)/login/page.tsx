@@ -6,7 +6,7 @@ import { auth, signIn } from "@/lib/auth";
 
 export default async function LoginPage() {
   const session = await auth();
-  if (session?.user) redirect("/");
+  if (session?.user?.id) redirect("/");
 
   const devAuth = process.env.DEV_AUTH === "true" && process.env.NODE_ENV !== "production";
 
