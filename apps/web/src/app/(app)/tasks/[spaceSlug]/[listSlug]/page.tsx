@@ -240,6 +240,8 @@ export default async function ListPage(props: {
           fieldDefs={fieldDefs}
           userNames={userNames}
           groupBy={groupBy || undefined}
+          listId={list.id}
+          initialColumnOrder={(list.tableColumnOrder as string[] | null) ?? undefined}
         />
       )}
     </div>

@@ -647,6 +647,21 @@ export async function addComment(formData: FormData) {
   revalidatePath(`/tasks/task/${task.number}`);
 }
 
+export async function saveTableColumnOrder(listId: string, order: string[]) {
+  "use server";
+  await requireUser();
+  const { list, space } = await requireList(listId);
+  // Any space member can save their own column layout — we only need role existence
+  const { getSpaceRole } = await import("@/lib/rbac");
+  const user = await (await import("@/lib/auth")).auth();
+  if (!user?.user?.id) return;
+  const role = await getSpaceRole(user.user.id, space.id, (user.user as { platformRole?: string }).platformRole ?? "member");
+  if (!role) return;
+
+  await db.update(lists).set({ tableColumnOrder: order }).where(eq(lists.id, list.id));
+  // No revalidatePath needed — client reads this on next load via prop
+}
+
 export async function saveTaskLayout(
   listId: string,
   layout: import("./layout-types").TaskLayout,

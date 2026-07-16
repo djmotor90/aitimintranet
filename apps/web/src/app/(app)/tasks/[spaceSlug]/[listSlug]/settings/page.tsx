@@ -3,18 +3,16 @@ import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { assertSpaceRole, requireUser } from "@/lib/rbac";
 import {
   archiveFieldDefinition,
-  createFieldDefinition,
   createStatus,
   deleteStatus,
 } from "@/modules/tasks/actions";
+import { FieldDefinitionForm } from "@/modules/tasks/components/field-definition-form";
 import { LayoutBuilder } from "@/modules/tasks/components/layout-builder";
 import { defaultLayout, type TaskLayout } from "@/modules/tasks/layout-types";
 import {
@@ -24,24 +22,13 @@ import {
   getStatusesForList,
 } from "@/modules/tasks/queries";
 
-const FIELD_TYPES = [
-  "text",
-  "textarea",
-  "number",
-  "date",
-  "dropdown",
-  "multi_select",
-  "user",
-  "checkbox",
-  "url",
-  "email",
-  "phone",
-];
 
 export default async function ListSettingsPage(props: {
   params: Promise<{ spaceSlug: string; listSlug: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }) {
   const { spaceSlug, listSlug } = await props.params;
+  const { tab } = await props.searchParams;
   await requireUser();
   const space = await getSpaceBySlug(spaceSlug);
   if (!space) notFound();
@@ -69,7 +56,7 @@ export default async function ListSettingsPage(props: {
         <h1 className="text-2xl font-semibold">List settings</h1>
       </div>
 
-      <Tabs defaultValue="layout">
+      <Tabs defaultValue={tab ?? "layout"}>
         <TabsList className="mb-4">
           <TabsTrigger value="layout">Task layout</TabsTrigger>
           <TabsTrigger value="statuses">Statuses</TabsTrigger>
@@ -182,37 +169,7 @@ export default async function ListSettingsPage(props: {
                   <li className="text-sm text-muted-foreground">No custom fields yet.</li>
                 )}
               </ul>
-              <form action={createFieldDefinition} className="flex flex-col gap-3 border-t pt-4">
-                <input type="hidden" name="listId" value={list.id} />
-                <div className="flex flex-wrap items-end gap-2">
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="f-label">Label</Label>
-                    <Input id="f-label" name="label" required className="w-48" />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="f-type">Type</Label>
-                    <select
-                      id="f-type"
-                      name="type"
-                      className="h-9 rounded-md border bg-transparent px-3 text-sm"
-                    >
-                      {FIELD_TYPES.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <label className="flex h-9 items-center gap-2 text-sm">
-                    <Checkbox name="isRequired" /> Required
-                  </label>
-                  <Button type="submit">Add field</Button>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor="f-options">Options (dropdown/multi-select — one per line)</Label>
-                  <Textarea id="f-options" name="options" rows={3} className="max-w-sm" />
-                </div>
-              </form>
+              <FieldDefinitionForm listId={list.id} />
             </CardContent>
           </Card>
         </TabsContent>

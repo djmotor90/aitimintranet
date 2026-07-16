@@ -20,7 +20,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Plus, Trash2, Columns, X } from "lucide-react";
+import { GripVertical, Plus, Trash2, Square, SquareDashed, X } from "lucide-react";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -151,6 +151,7 @@ function GroupCard({
   allFields,
   onLabelChange,
   onColumnsChange,
+  onBorderChange,
   onRemoveField,
   onDelete,
   isDraggingGroup,
@@ -158,7 +159,8 @@ function GroupCard({
   group: LayoutGroup;
   allFields: FieldMeta[];
   onLabelChange: (id: string, label: string) => void;
-  onColumnsChange: (id: string, columns: 1 | 2 | 3) => void;
+  onColumnsChange: (id: string, columns: 1 | 2 | 3 | 4 | 5) => void;
+  onBorderChange: (id: string, showBorder: boolean) => void;
   onRemoveField: (groupId: string, fieldId: string) => void;
   onDelete: (id: string) => void;
   isDraggingGroup: boolean;
@@ -199,25 +201,40 @@ function GroupCard({
           placeholder="Group name…"
         />
 
-        {/* column count toggle */}
-        <div className="flex items-center gap-0.5 rounded-md border p-0.5">
-          {([1, 2, 3] as const).map((n) => (
+        {/* column count */}
+        <div className="flex items-center gap-0.5 rounded-md border p-0.5" title="Columns">
+          {([1, 2, 3, 4, 5] as const).map((n) => (
             <button
               key={n}
               type="button"
               onClick={() => onColumnsChange(group.id, n)}
               className={cn(
-                "rounded px-2 py-0.5 text-xs transition-colors",
+                "rounded px-1.5 py-0.5 text-xs transition-colors",
                 group.columns === n
                   ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
-              title={`${n} column${n > 1 ? "s" : ""}`}
+              title={`${n} col${n > 1 ? "s" : ""}`}
             >
               {n}
             </button>
           ))}
         </div>
+
+        {/* border toggle */}
+        <button
+          type="button"
+          onClick={() => onBorderChange(group.id, !group.showBorder)}
+          className={cn(
+            "transition-colors",
+            group.showBorder ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+          title={group.showBorder ? "Hide border" : "Show border"}
+        >
+          {group.showBorder
+            ? <Square className="size-3.5" />
+            : <SquareDashed className="size-3.5" />}
+        </button>
 
         <button
           type="button"
@@ -239,12 +256,13 @@ function GroupCard({
       >
         <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
           <div
-            className={cn(
-              "grid gap-1.5",
-              group.columns === 1 && "grid-cols-1",
-              group.columns === 2 && "grid-cols-2",
-              group.columns === 3 && "grid-cols-3",
-            )}
+            className={{
+              1: "grid gap-1.5 grid-cols-1",
+              2: "grid gap-1.5 grid-cols-2",
+              3: "grid gap-1.5 grid-cols-3",
+              4: "grid gap-1.5 grid-cols-4",
+              5: "grid gap-1.5 grid-cols-5",
+            }[group.columns] ?? "grid gap-1.5 grid-cols-2"}
           >
             {group.fields.map(({ id: fieldId }) => {
               const meta = allFields.find((f) => f.id === fieldId);
@@ -306,6 +324,8 @@ export function LayoutBuilder({
     // Keep only field IDs that still exist (field defs might have been archived)
     const groups = initialLayout.groups.map((g) => ({
       ...g,
+      columns: (g.columns ?? 2) as 1 | 2 | 3 | 4 | 5,
+      showBorder: g.showBorder ?? true,
       fields: g.fields.filter((f) => allFieldIds.has(f.id)),
     }));
     return { groups, unassigned };
@@ -453,7 +473,7 @@ export function LayoutBuilder({
       ...prev,
       groups: [
         ...prev.groups,
-        { id, label: "New group", columns: 2, fields: [] },
+        { id, label: "New group", columns: 2, showBorder: true, fields: [] },
       ],
     }));
   }
@@ -476,10 +496,17 @@ export function LayoutBuilder({
     }));
   }
 
-  function updateColumns(groupId: string, columns: 1 | 2 | 3) {
+  function updateColumns(groupId: string, columns: 1 | 2 | 3 | 4 | 5) {
     setState((prev) => ({
       ...prev,
       groups: prev.groups.map((g) => (g.id === groupId ? { ...g, columns } : g)),
+    }));
+  }
+
+  function updateBorder(groupId: string, showBorder: boolean) {
+    setState((prev) => ({
+      ...prev,
+      groups: prev.groups.map((g) => (g.id === groupId ? { ...g, showBorder } : g)),
     }));
   }
 
@@ -528,6 +555,7 @@ export function LayoutBuilder({
                 allFields={allFields}
                 onLabelChange={updateLabel}
                 onColumnsChange={updateColumns}
+                onBorderChange={updateBorder}
                 onRemoveField={removeFieldFromGroup}
                 onDelete={deleteGroup}
                 isDraggingGroup={isDraggingGroup}

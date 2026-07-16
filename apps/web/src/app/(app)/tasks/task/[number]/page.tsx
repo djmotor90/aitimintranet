@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { getSpaceRole, requireUser } from "@/lib/rbac";
 import { archiveTask, updateTaskCore } from "@/modules/tasks/actions";
 import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
@@ -232,22 +233,31 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
           />
 
           {/* layout-driven field groups */}
-          {layout.groups.map((group, gi) => (
-            <div key={group.id} className="flex flex-col gap-3 rounded-lg border p-4">
+          {layout.groups.map((group) => {
+            const showBorder = (group as { showBorder?: boolean }).showBorder ?? true;
+            const colClassMap: Record<number, string> = {
+              1: "flex flex-col gap-3",
+              2: "grid gap-3 sm:grid-cols-2",
+              3: "grid gap-3 sm:grid-cols-3",
+              4: "grid gap-3 sm:grid-cols-4",
+              5: "grid gap-3 sm:grid-cols-5",
+            };
+            const cols = group.columns ?? 2;
+            const colClass = colClassMap[cols] ?? colClassMap[2];
+            return (
+            <div
+              key={group.id}
+              className={cn(
+                "flex flex-col gap-3 p-4",
+                showBorder && "rounded-lg border",
+              )}
+            >
               {group.label && (
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   {group.label}
                 </p>
               )}
-              <div
-                className={
-                  group.columns === 3
-                    ? "grid gap-3 sm:grid-cols-3"
-                    : group.columns === 2
-                      ? "grid gap-3 sm:grid-cols-2"
-                      : "flex flex-col gap-3"
-                }
-              >
+              <div className={colClass}>
                 {group.fields.map(({ id: fieldId }) => {
                   if (fieldId === "status") return (
                     <div key="status" className="flex flex-col gap-1.5">
@@ -335,7 +345,8 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                 })}
               </div>
             </div>
-          ))}
+            );
+          })}
 
           {canEdit && (
             <div className="flex gap-2">

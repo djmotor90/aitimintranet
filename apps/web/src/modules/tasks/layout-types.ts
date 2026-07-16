@@ -13,7 +13,9 @@ export interface LayoutField {
 export interface LayoutGroup {
   id: string;        // grp-{uuid}
   label: string;
-  columns: 1 | 2 | 3;
+  columns: 1 | 2 | 3 | 4 | 5;
+  /** Whether the group renders with a visible border in the task view. */
+  showBorder: boolean;
   fields: LayoutField[];
 }
 
@@ -37,6 +39,7 @@ export function defaultLayout(fieldDefs: { id: string }[]): TaskLayout {
         id: "grp-default",
         label: "Details",
         columns: 2,
+        showBorder: true,
         fields: [
           ...CORE_FIELDS.map((f) => ({ id: f.id })),
           ...fieldDefs.map((d) => ({ id: `cf_${d.id}` })),

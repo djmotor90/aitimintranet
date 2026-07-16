@@ -1,0 +1,1 @@
+ALTER TABLE "lists" ADD COLUMN "table_column_order" jsonb;
