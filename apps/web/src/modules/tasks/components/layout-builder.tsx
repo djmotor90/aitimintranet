@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { saveTaskLayout } from "../actions";
-import { CORE_FIELDS, type LayoutGroup, type TaskLayout } from "../layout-types";
+import { CORE_FIELDS, type CoreField, type LayoutGroup, type TaskLayout } from "../layout-types";
 
 // ─── field meta ───────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ interface FieldMeta {
   label: string;
   isCustom: boolean;
   fieldType?: string;
+  readonly?: boolean;
 }
 
 // ─── field chip (used in groups and unassigned pool) ──────────────────────────
@@ -75,6 +76,11 @@ function FieldChip({
       {field.isCustom && (
         <Badge variant="outline" className="h-4 px-1 text-[10px]">
           {field.fieldType}
+        </Badge>
+      )}
+      {field.readonly && (
+        <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+          auto
         </Badge>
       )}
       {onRemove && (
@@ -305,7 +311,7 @@ export function LayoutBuilder({
   fieldDefs: { id: string; label: string; type: string }[];
 }) {
   const allFields: FieldMeta[] = [
-    ...CORE_FIELDS.map((f) => ({ ...f, isCustom: false })),
+    ...CORE_FIELDS.map((f: CoreField) => ({ ...f, isCustom: false })),
     ...fieldDefs.map((d) => ({
       id: `cf_${d.id}`,
       label: d.label,

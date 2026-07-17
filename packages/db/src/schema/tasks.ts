@@ -116,6 +116,10 @@ export const lists = pgTable(
     isArchived: boolean("is_archived").notNull().default(false),
     taskLayout: jsonb("task_layout"),
     tableColumnOrder: jsonb("table_column_order"),
+    /** Persisted default view: "table" | "board" */
+    defaultView: text("default_view"),
+    /** Persisted default groupBy, e.g. "status" | "cf_{id}" | null */
+    defaultGroupBy: text("default_group_by"),
     ...timestamps,
   },
   (t) => [uniqueIndex("lists_space_slug_idx").on(t.spaceId, t.slug)],

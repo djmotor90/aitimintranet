@@ -31,31 +31,87 @@ if (
   throw new Error("AUTH_URL is required in production. See docs/coolify.md.");
 }
 
+/**
+ * Group Object IDs (from Azure portal) that gate intranet access.
+ * ENTRA_ADMIN_GROUP_ID  → platform_role = admin
+ * ENTRA_MEMBER_GROUP_ID → platform_role = member
+ *
+ * If neither env var is set (e.g. local dev without Entra), the gate is skipped
+ * and the default "member" role is used, preserving the existing dev-auth flow.
+ */
+const ACCESS_GROUPS = {
+  admin:  process.env.ENTRA_ADMIN_GROUP_ID  ?? null,
+  member: process.env.ENTRA_MEMBER_GROUP_ID ?? null,
+} as const;
+
+/**
+ * Call Graph's checkMemberGroups to discover which (if any) of our access
+ * groups the signing-in user belongs to. Returns null when no groups are
+ * configured so the gate is a no-op in unconfigured / dev environments.
+ */
+async function resolveAccessGroup(
+  accessToken: string,
+): Promise<"admin" | "member" | null> {
+  const groupIds = [ACCESS_GROUPS.admin, ACCESS_GROUPS.member].filter(Boolean) as string[];
+  if (groupIds.length === 0) return "member"; // no gate configured — allow all
+
+  const res = await fetch("https://graph.microsoft.com/v1.0/me/checkMemberGroups", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ groupIds }),
+  });
+
+  if (!res.ok) {
+    // Fail open so a transient Graph error doesn't lock everyone out.
+    console.error("checkMemberGroups failed", res.status, await res.text());
+    return "member";
+  }
+
+  const { value } = (await res.json()) as { value: string[] };
+
+  // Admin group takes precedence if the user is in both.
+  if (ACCESS_GROUPS.admin && value.includes(ACCESS_GROUPS.admin)) return "admin";
+  if (ACCESS_GROUPS.member && value.includes(ACCESS_GROUPS.member)) return "member";
+  return null; // not in either access group → deny
+}
+
 /** Upsert the signing-in Entra user and return our internal row. Lazy db import keeps proxy bundle light. */
-async function provisionUser(profile: {
-  oid: string;
-  email: string;
-  name: string;
-}): Promise<{ id: string; platformRole: "admin" | "member" } | null> {
+async function provisionUser(
+  profile: { oid: string; email: string; name: string },
+  accessToken: string,
+): Promise<{ id: string; platformRole: "admin" | "member" } | null> {
   const { db, users } = await import("@aitim/db");
   const { eq } = await import("drizzle-orm");
 
+  // ── group gate ──────────────────────────────────────────────────────────────
+  const resolvedRole = await resolveAccessGroup(accessToken);
+  if (resolvedRole === null) {
+    console.warn(`Sign-in denied for ${profile.email}: not in any intranet access group`);
+    return null;
+  }
+
   const existing = await db.select().from(users).where(eq(users.entraObjectId, profile.oid));
   if (existing[0]) {
-    if (!existing[0].isActive) return null; // deactivated accounts may not sign in
+    if (!existing[0].isActive) return null; // manually deactivated accounts may not sign in
     await db
       .update(users)
       .set({ email: profile.email, displayName: profile.name })
       .where(eq(users.id, existing[0].id));
+    // Role is managed by the sync job for existing users; don't override it here.
     return { id: existing[0].id, platformRole: existing[0].platformRole };
   }
+
+  // New user: set role from group membership (sync job will keep it current after that).
   const [created] = await db
     .insert(users)
     .values({
       entraObjectId: profile.oid,
       email: profile.email,
       displayName: profile.name,
-      platformRole: "member",
+      platformRole: resolvedRole,
     })
     .returning();
   return { id: created.id, platformRole: created.platformRole };
@@ -124,11 +180,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async jwt({ token, account, profile, user }) {
       // Initial sign-in via Entra
       if (account?.provider === "microsoft-entra-id" && profile) {
-        const provisioned = await provisionUser({
-          oid: String(profile.oid ?? profile.sub),
-          email: String(profile.email ?? profile.preferred_username ?? ""),
-          name: String(profile.name ?? ""),
-        });
+        const provisioned = await provisionUser(
+          {
+            oid: String(profile.oid ?? profile.sub),
+            email: String(profile.email ?? profile.preferred_username ?? ""),
+            name: String(profile.name ?? ""),
+          },
+          String(account.access_token ?? ""),
+        );
         if (!provisioned) return { ...token, error: "RefreshTokenError" };
         token.userId = provisioned.id;
         token.platformRole = provisioned.platformRole;

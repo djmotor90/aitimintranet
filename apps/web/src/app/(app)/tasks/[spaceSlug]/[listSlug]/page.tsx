@@ -10,6 +10,7 @@ import { FilterBar, type FilterCondition } from "@/modules/tasks/components/filt
 import { ListLiveRefresh } from "@/modules/tasks/components/list-live-refresh";
 import { NewTaskDialog } from "@/modules/tasks/components/new-task-dialog";
 import { TaskTable } from "@/modules/tasks/components/task-table";
+import { ViewToggle } from "@/modules/tasks/components/view-toggle";
 import {
   getActiveUsers,
   getFieldDefinitions,
@@ -25,7 +26,6 @@ export default async function ListPage(props: {
 }) {
   const { spaceSlug, listSlug } = await props.params;
   const sp = await props.searchParams;
-  const view = sp.view === "board" ? "board" : "table";
 
   const user = await requireUser();
   const space = await getSpaceBySlug(spaceSlug);
@@ -34,6 +34,12 @@ export default async function ListPage(props: {
   if (!role) notFound();
   const list = await getListBySlug(space.id, listSlug);
   if (!list) notFound();
+
+  // URL param wins; fall back to list's persisted default; then "table".
+  const view: "table" | "board" =
+    sp.view === "board" ? "board"
+    : sp.view === "table" ? "table"
+    : (list.defaultView === "board" ? "board" : "table");
 
   const [listStatuses, fieldDefs, items, activeUsers] = await Promise.all([
     getStatusesForList(list.id),
@@ -52,7 +58,8 @@ export default async function ListPage(props: {
     // malformed JSON — ignore
   }
 
-  const groupBy = sp.groupBy ?? "";
+  // URL param wins; fall back to list's persisted default.
+  const groupBy = sp.groupBy ?? list.defaultGroupBy ?? "";
 
   // ─── apply filters (server-side) ───────────────────────────────────────────
 
@@ -168,10 +175,6 @@ export default async function ListPage(props: {
     assignees,
   }));
 
-  const baseParams = new URLSearchParams(
-    Object.entries(sp).filter(([k, v]) => v && k !== "view") as [string, string][],
-  );
-
   return (
     <div className="flex h-full flex-col">
       <ListLiveRefresh listId={list.id} />
@@ -189,22 +192,9 @@ export default async function ListPage(props: {
 
         <div className="ml-auto flex items-center gap-2">
           {/* view toggle */}
-          <div className="flex rounded-md border p-0.5">
-            <Link
-              href={`?${new URLSearchParams({ ...Object.fromEntries(baseParams), view: "board" }).toString()}`}
-            >
-              <Button variant={view === "board" ? "secondary" : "ghost"} size="sm">
-                Board
-              </Button>
-            </Link>
-            <Link
-              href={`?${new URLSearchParams({ ...Object.fromEntries(baseParams) }).toString()}`}
-            >
-              <Button variant={view === "table" ? "secondary" : "ghost"} size="sm">
-                Table
-              </Button>
-            </Link>
-          </div>
+          <Suspense>
+            <ViewToggle listId={list.id} view={view} />
+          </Suspense>
 
           {role === "owner" && (
             <Link href={`/tasks/${space.slug}/${list.slug}/settings`}>
@@ -223,6 +213,7 @@ export default async function ListPage(props: {
         <Badge variant="secondary">{filtered.length} tasks</Badge>
         <Suspense>
           <FilterBar
+            listId={list.id}
             statuses={listStatuses}
             fieldDefs={fieldDefs}
             activeUsers={activeUsers}

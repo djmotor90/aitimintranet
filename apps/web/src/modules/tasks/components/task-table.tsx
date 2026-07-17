@@ -30,11 +30,13 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { TaskWithMeta } from "../queries";
-import { saveTableColumnOrder } from "../actions";
+import { saveListViewPrefs, saveTableColumnOrder } from "../actions";
 import { PRIORITY_STYLES } from "./task-card";
 
 interface StatusLike { id: string; name: string; color: string }
@@ -56,14 +58,24 @@ function renderFieldValue(def: FieldDefLike, value: unknown, userNames: Map<stri
 }
 
 const BASE_COLUMNS = [
-  { id: "number",    label: "#",         width: 90,  minWidth: 72  },
-  { id: "title",     label: "Title",     width: 360, minWidth: 220 },
-  { id: "status",    label: "Status",    width: 150, minWidth: 120 },
-  { id: "priority",  label: "Priority",  width: 130, minWidth: 110 },
-  { id: "due",       label: "Due",       width: 140, minWidth: 120 },
-  { id: "assignees", label: "Assignees", width: 150, minWidth: 120 },
+  { id: "number",     label: "#",            width: 90,  minWidth: 72  },
+  { id: "title",      label: "Title",        width: 360, minWidth: 220 },
+  { id: "status",     label: "Status",       width: 150, minWidth: 120 },
+  { id: "priority",   label: "Priority",     width: 130, minWidth: 110 },
+  { id: "due",        label: "Due date",     width: 140, minWidth: 120 },
+  { id: "start_date", label: "Start date",   width: 140, minWidth: 120 },
+  { id: "assignees",  label: "Assignees",    width: 150, minWidth: 120 },
+  { id: "created_at", label: "Created date", width: 160, minWidth: 120 },
+  { id: "closed_at",  label: "Closed date",  width: 160, minWidth: 120 },
 ];
 const BASE_COL_MAP = new Map(BASE_COLUMNS.map((c) => [c.id, c]));
+
+/** These base columns cannot be hidden — they are always shown. */
+const ALWAYS_VISIBLE = new Set(["number", "title"]);
+/** Base columns shown in the field selector (hideable). */
+const HIDEABLE_BASE_COLS = BASE_COLUMNS.filter((c) => !ALWAYS_VISIBLE.has(c.id));
+/** Base columns hidden by default (auto-managed). */
+const DEFAULT_HIDDEN_COLS = ["created_at", "closed_at"];
 
 interface ColumnDef { id: string; label: string; width: number; minWidth: number }
 interface Group { key: string; label: string; color?: string; items: TaskWithMeta[] }
@@ -194,9 +206,12 @@ export function TaskTable({
   const router = useRouter();
   const [, startTransition] = useTransition();
 
+
   // ── column order ──────────────────────────────────────────────────────────
   const defaultOrder = useMemo(
     () => [...BASE_COLUMNS.map((c) => c.id), ...fieldDefs.map((d) => `field-${d.id}`)],
+    // fieldDefs is the only runtime dependency; BASE_COLUMNS is module-level constant
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [fieldDefs],
   );
 
@@ -219,38 +234,39 @@ export function TaskTable({
   }, [columnOrder]);
 
   // ── column visibility ─────────────────────────────────────────────────────
-  const hiddenStorageKey = useMemo(
-    () => `aitim:task-table-hidden-fields:${fieldDefs.map((d) => d.id).join(":")}`,
-    [fieldDefs],
-  );
-  const [hiddenFieldIds, setHiddenFieldIds] = useState<string[]>([]);
+  // Stores column IDs of hidden cols: base col IDs (e.g. "status") or "field-{defId}" for custom.
+  const hiddenStorageKey = `aitim:task-table-hidden:${listId}`;
+  const [hiddenColIds, setHiddenColIds] = useState<string[]>([]);
   const [visibilityLoaded, setVisibilityLoaded] = useState(false);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(hiddenStorageKey);
     try {
-      const saved = raw ? (JSON.parse(raw) as string[]) : [];
-      const fieldIds = new Set(fieldDefs.map((d) => d.id));
+      const saved = raw ? (JSON.parse(raw) as string[]) : DEFAULT_HIDDEN_COLS;
       const timeout = window.setTimeout(() => {
-        setHiddenFieldIds(saved.filter((id) => fieldIds.has(id)));
+        setHiddenColIds(saved);
         setVisibilityLoaded(true);
       }, 0);
       return () => window.clearTimeout(timeout);
     } catch {
       window.localStorage.removeItem(hiddenStorageKey);
-      const timeout = window.setTimeout(() => setVisibilityLoaded(true), 0);
+      const timeout = window.setTimeout(() => {
+        setHiddenColIds(DEFAULT_HIDDEN_COLS);
+        setVisibilityLoaded(true);
+      }, 0);
       return () => window.clearTimeout(timeout);
     }
-  }, [fieldDefs, hiddenStorageKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!visibilityLoaded) return;
-    window.localStorage.setItem(hiddenStorageKey, JSON.stringify(hiddenFieldIds));
-  }, [hiddenFieldIds, hiddenStorageKey, visibilityLoaded]);
+    window.localStorage.setItem(hiddenStorageKey, JSON.stringify(hiddenColIds));
+  }, [hiddenColIds, hiddenStorageKey, visibilityLoaded]);
 
-  function toggleField(fieldId: string) {
-    setHiddenFieldIds((cur) =>
-      cur.includes(fieldId) ? cur.filter((id) => id !== fieldId) : [...cur, fieldId],
+  function toggleCol(colId: string) {
+    setHiddenColIds((cur) =>
+      cur.includes(colId) ? cur.filter((id) => id !== colId) : [...cur, colId],
     );
   }
 
@@ -332,21 +348,22 @@ export function TaskTable({
 
   // ── ordered visible columns ───────────────────────────────────────────────
   const orderedColumns = useMemo<ColumnDef[]>(() => {
+    const hiddenSet = new Set(hiddenColIds);
     const result: ColumnDef[] = [];
     for (const id of columnOrder) {
       if (BASE_COL_MAP.has(id)) {
+        if (!ALWAYS_VISIBLE.has(id) && hiddenSet.has(id)) continue;
         const base = BASE_COL_MAP.get(id)!;
         result.push({ ...base, width: widths[id] ?? base.width });
       } else if (id.startsWith("field-")) {
-        const defId = id.slice(6);
-        if (hiddenFieldIds.includes(defId)) continue;
-        const def = fieldDefs.find((d) => d.id === defId);
+        if (hiddenSet.has(id)) continue;
+        const def = fieldDefs.find((d) => d.id === id.slice(6));
         if (!def) continue;
         result.push({ id, label: def.label, width: widths[id] ?? 180, minWidth: 120 });
       }
     }
     return result;
-  }, [columnOrder, fieldDefs, hiddenFieldIds, widths]);
+  }, [columnOrder, fieldDefs, hiddenColIds, widths]);
 
   function columnWidth(col: ColumnDef) { return widths[col.id] ?? col.width; }
 
@@ -407,9 +424,11 @@ export function TaskTable({
     setSort(active ? null : { fieldId: ctxMenu!.fieldId, dir });
   }
   function ctxGroup() {
+    const value = `cf_${ctxMenu!.fieldId}`;
     const params = new URLSearchParams(window.location.search);
-    params.set("groupBy", `cf_${ctxMenu!.fieldId}`);
+    params.set("groupBy", value);
     router.push(`${window.location.pathname}?${params.toString()}`);
+    startTransition(() => { saveListViewPrefs(listId, { groupBy: value }); });
     setCtxMenu(null);
   }
   function ctxEditOptions() {
@@ -435,7 +454,7 @@ export function TaskTable({
     setCtxMenu(null);
   }
   function ctxHide() {
-    toggleField(ctxMenu!.fieldId);
+    toggleCol(`field-${ctxMenu!.fieldId}`);
     setCtxMenu(null);
   }
 
@@ -465,6 +484,17 @@ export function TaskTable({
           </TableCell>
         );
       case "due": return <TableCell key={colId} className="text-sm">{task.dueDate ?? "—"}</TableCell>;
+      case "start_date": return <TableCell key={colId} className="text-sm">{task.startDate ?? "—"}</TableCell>;
+      case "created_at": return (
+        <TableCell key={colId} className="text-sm">
+          {task.createdAt ? new Date(task.createdAt).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"}
+        </TableCell>
+      );
+      case "closed_at": return (
+        <TableCell key={colId} className="text-sm">
+          {task.completedAt ? new Date(task.completedAt).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"}
+        </TableCell>
+      );
       case "assignees":
         return (
           <TableCell key={colId}>
@@ -545,38 +575,56 @@ export function TaskTable({
 
   const totalWidth = orderedColumns.reduce((sum, col) => sum + columnWidth(col), 0);
   const colSpan = orderedColumns.length;
-  const visibleCustomFieldCount = fieldDefs.filter((d) => !hiddenFieldIds.includes(d.id)).length;
+  const totalHideable = HIDEABLE_BASE_COLS.length + fieldDefs.length;
+  const visibleCount = totalHideable - hiddenColIds.filter((id) =>
+    HIDEABLE_BASE_COLS.some((c) => c.id === id) || id.startsWith("field-"),
+  ).length;
   const showCalcFooter = calcFieldIds.size > 0;
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-3">
       {/* toolbar */}
-      {fieldDefs.length > 0 && (
-        <div className="flex justify-end">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button type="button" variant="outline" size="sm" className="gap-2">
-                <Columns3 className="size-4" />
-                Custom fields
-                <span className="text-muted-foreground">{visibleCustomFieldCount}/{fieldDefs.length}</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="max-h-72">
-              {fieldDefs.map((field) => (
-                <DropdownMenuCheckboxItem
-                  key={field.id}
-                  checked={!hiddenFieldIds.includes(field.id)}
-                  onCheckedChange={() => toggleField(field.id)}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {field.label}
-                </DropdownMenuCheckboxItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
+      <div className="flex justify-end">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="outline" size="sm" className="gap-2">
+              <Columns3 className="size-4" />
+              Fields
+              <span className="text-muted-foreground">{visibleCount}/{totalHideable}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="max-h-96 overflow-y-auto w-52">
+            <DropdownMenuLabel className="text-xs text-muted-foreground">Standard fields</DropdownMenuLabel>
+            {HIDEABLE_BASE_COLS.map((col) => (
+              <DropdownMenuCheckboxItem
+                key={col.id}
+                checked={!hiddenColIds.includes(col.id)}
+                onCheckedChange={() => toggleCol(col.id)}
+                onSelect={(e) => e.preventDefault()}
+              >
+                {col.label}
+              </DropdownMenuCheckboxItem>
+            ))}
+            {fieldDefs.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs text-muted-foreground">Custom fields</DropdownMenuLabel>
+                {fieldDefs.map((field) => (
+                  <DropdownMenuCheckboxItem
+                    key={field.id}
+                    checked={!hiddenColIds.includes(`field-${field.id}`)}
+                    onCheckedChange={() => toggleCol(`field-${field.id}`)}
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    {field.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
 
       <Table className="table-fixed" style={{ width: totalWidth }}>
         <colgroup>
@@ -690,7 +738,7 @@ export function TaskTable({
           isSorted={sort?.fieldId === ctxMenu.fieldId}
           sortDir={sort?.dir ?? "asc"}
           hasCalc={calcFieldIds.has(ctxMenu.fieldId)}
-          isHidden={hiddenFieldIds.includes(ctxMenu.fieldId)}
+          isHidden={hiddenColIds.includes(`field-${ctxMenu.fieldId}`)}
           onSort={ctxSort}
           onGroup={ctxGroup}
           onEditOptions={ctxEditOptions}

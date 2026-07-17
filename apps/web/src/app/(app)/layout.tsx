@@ -22,8 +22,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const taskNavTree = await getTaskNavTreeForUser(user);
 
   return (
-    <div className="flex min-h-svh">
-      <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar p-4">
+    <div className="flex h-svh overflow-hidden">
+      <aside className="flex h-full w-56 shrink-0 flex-col overflow-y-auto border-r bg-sidebar p-4">
         <Link href="/" className="mb-6 px-3 text-lg font-semibold tracking-tight">
           AITIM <span className="text-muted-foreground">Intranet</span>
         </Link>
@@ -63,7 +63,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </DropdownMenu>
         </div>
       </aside>
-      <main className="min-w-0 flex-1 overflow-x-auto p-6">{children}</main>
+      <main className="min-w-0 flex-1 overflow-x-auto overflow-y-auto p-6">{children}</main>
     </div>
   );
 }

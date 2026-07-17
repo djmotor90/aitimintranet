@@ -31,18 +31,21 @@ export function TaskDetailShell({
   }
 
   return (
-    <div className="flex w-full min-h-0">
-      {/* ── main content ── */}
-      <div className="min-w-0 flex-1 pr-6">
+    // Shell fills the full height of <main> so each column manages its own scroll
+    <div className="flex h-full min-h-0">
+
+      {/* ── center — scrolls independently ── */}
+      <div className="min-w-0 flex-1 overflow-y-auto pr-6">
         {children}
       </div>
 
-      {/* ── right panel: border + tab + sliding content ── */}
-      <div className="relative flex-shrink-0">
-        {/* persistent separator — always visible at left edge of this column */}
+      {/* ── right panel ── */}
+      <div className="relative flex h-full flex-shrink-0">
+
+        {/* persistent separator */}
         <div className="absolute inset-y-0 left-0 border-l" />
 
-        {/* toggle tab — sits just outside the border, stays put */}
+        {/* toggle tab — always on the left border edge */}
         <button
           type="button"
           onClick={toggle}
@@ -60,16 +63,18 @@ export function TaskDetailShell({
             : <ChevronLeft className="size-3 shrink-0" />}
         </button>
 
-        {/* sliding content — width transitions, overflow hidden clips it */}
+        {/* sliding wrapper — overflow:clip clips without breaking any scroll context */}
         <div
+          style={{ overflow: "clip" }}
           className={cn(
-            "overflow-hidden transition-all duration-300 ease-in-out",
+            "h-full transition-all duration-300 ease-in-out",
             mounted
-              ? open ? "w-[360px] xl:w-[400px] opacity-100" : "w-0 opacity-0"
+              ? open ? "w-[360px] xl:w-[400px] opacity-100" : "w-0 opacity-0 pointer-events-none"
               : "w-[360px] xl:w-[400px] opacity-100",
           )}
         >
-          <aside className="w-[360px] xl:w-[400px] pl-6 flex flex-col lg:sticky lg:top-6 lg:h-[calc(100vh-3rem)]">
+          {/* aside fills full panel height — no sticky needed */}
+          <aside className="flex h-full w-[360px] xl:w-[400px] flex-col pl-6">
             <Card className="flex min-h-0 flex-1 flex-col">
               <CardHeader className="shrink-0 border-b">
                 <CardTitle className="text-base">Activity</CardTitle>

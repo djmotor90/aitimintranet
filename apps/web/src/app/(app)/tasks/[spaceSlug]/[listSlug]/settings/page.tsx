@@ -91,23 +91,44 @@ export default async function ListSettingsPage(props: {
               <CardTitle>Statuses</CardTitle>
               <CardDescription>Workflow columns for this list, in order.</CardDescription>
             </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <ul className="flex flex-col gap-2">
-                {listStatuses.map((s) => (
-                  <li key={s.id} className="flex items-center gap-2">
-                    <span className="size-3 rounded-full" style={{ backgroundColor: s.color }} />
-                    <span className="font-medium">{s.name}</span>
-                    <Badge variant="outline">{s.category}</Badge>
-                    {list.defaultStatusId === s.id && <Badge variant="secondary">default</Badge>}
-                    <form action={deleteStatus} className="ml-auto">
-                      <input type="hidden" name="statusId" value={s.id} />
-                      <Button variant="ghost" size="sm" type="submit">
-                        Delete
-                      </Button>
-                    </form>
-                  </li>
-                ))}
-              </ul>
+            <CardContent className="flex flex-col gap-6">
+              {(
+                [
+                  { category: "open",      label: "Not Started", color: "text-slate-500" },
+                  { category: "active",    label: "Active",      color: "text-blue-500" },
+                  { category: "done",      label: "Done",        color: "text-green-500" },
+                  { category: "cancelled", label: "Closed",      color: "text-rose-500" },
+                ] as const
+              ).map(({ category, label, color }) => {
+                const group = listStatuses.filter((s) => s.category === category);
+                return (
+                  <div key={category}>
+                    <p className={`mb-2 text-xs font-semibold uppercase tracking-wider ${color}`}>
+                      {label}
+                    </p>
+                    {group.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No statuses in this group.</p>
+                    ) : (
+                      <ul className="flex flex-col gap-2">
+                        {group.map((s) => (
+                          <li key={s.id} className="flex items-center gap-2">
+                            <span className="size-3 rounded-full" style={{ backgroundColor: s.color }} />
+                            <span className="font-medium">{s.name}</span>
+                            {list.defaultStatusId === s.id && <Badge variant="secondary">default</Badge>}
+                            <form action={deleteStatus} className="ml-auto">
+                              <input type="hidden" name="statusId" value={s.id} />
+                              <Button variant="ghost" size="sm" type="submit">
+                                Delete
+                              </Button>
+                            </form>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+
               <form action={createStatus} className="flex flex-wrap items-end gap-2 border-t pt-4">
                 <input type="hidden" name="listId" value={list.id} />
                 <div className="flex flex-col gap-1">
@@ -119,16 +140,16 @@ export default async function ListSettingsPage(props: {
                   <Input id="s-color" name="color" type="color" defaultValue="#94a3b8" className="w-16 p-1" />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <Label htmlFor="s-category">Category</Label>
+                  <Label htmlFor="s-category">Group</Label>
                   <select
                     id="s-category"
                     name="category"
                     className="h-9 rounded-md border bg-transparent px-3 text-sm"
                   >
-                    <option value="open">open</option>
-                    <option value="active">active</option>
-                    <option value="done">done</option>
-                    <option value="cancelled">cancelled</option>
+                    <option value="open">Not Started</option>
+                    <option value="active">Active</option>
+                    <option value="done">Done</option>
+                    <option value="cancelled">Closed</option>
                   </select>
                 </div>
                 <Button type="submit">Add status</Button>

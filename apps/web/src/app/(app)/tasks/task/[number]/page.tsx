@@ -305,6 +305,36 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                       />
                     </div>
                   );
+                  if (fieldId === "start_date") return (
+                    <div key="start_date" className="flex flex-col gap-1.5">
+                      <Label htmlFor="startDate">Start date</Label>
+                      <Input
+                        id="startDate"
+                        name="startDate"
+                        type="date"
+                        defaultValue={task.startDate ?? ""}
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  );
+                  if (fieldId === "created_at") return (
+                    <div key="created_at" className="flex flex-col gap-1.5">
+                      <Label className="text-muted-foreground">Created date</Label>
+                      <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
+                        {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(task.createdAt)}
+                      </div>
+                    </div>
+                  );
+                  if (fieldId === "closed_at") return (
+                    <div key="closed_at" className="flex flex-col gap-1.5">
+                      <Label className="text-muted-foreground">Closed date</Label>
+                      <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
+                        {task.completedAt
+                          ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(task.completedAt)
+                          : "—"}
+                      </div>
+                    </div>
+                  );
                   if (fieldId === "assignees") return (
                     <div key="assignees" className="flex flex-col gap-1.5">
                       <Label>Assignees</Label>

@@ -372,7 +372,9 @@ export async function updateTaskStatus(taskId: string, statusId: string) {
       .update(tasks)
       .set({
         statusId,
-        completedAt: toStatus.category === "done" ? new Date() : null,
+        completedAt: (toStatus.category === "done" || toStatus.category === "cancelled")
+          ? new Date()
+          : null,
       })
       .where(eq(tasks.id, taskId));
     await logActivity(tx, {
@@ -414,6 +416,8 @@ export async function updateTaskCore(formData: FormData) {
     : null;
   const dueDateRaw = String(formData.get("dueDate") ?? "");
   const dueDate = dueDateRaw ? z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(dueDateRaw) : null;
+  const startDateRaw = String(formData.get("startDate") ?? "");
+  const startDate = startDateRaw ? z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(startDateRaw) : null;
   const statusId = z.string().uuid().parse(formData.get("statusId"));
 
   const defs = (
@@ -438,9 +442,12 @@ export async function updateTaskCore(formData: FormData) {
         description: description ? { text: description } : null,
         priority,
         dueDate,
+        startDate,
         statusId,
         customFields,
-        completedAt: toStatus.category === "done" ? (task.completedAt ?? new Date()) : null,
+        completedAt: (toStatus.category === "done" || toStatus.category === "cancelled")
+          ? (task.completedAt ?? new Date())
+          : null,
       })
       .where(eq(tasks.id, taskId));
 
@@ -660,6 +667,31 @@ export async function saveTableColumnOrder(listId: string, order: string[]) {
 
   await db.update(lists).set({ tableColumnOrder: order }).where(eq(lists.id, list.id));
   // No revalidatePath needed — client reads this on next load via prop
+}
+
+/** Persist the active view (table|board) and/or groupBy for a list. Any space member can call this. */
+export async function saveListViewPrefs(
+  listId: string,
+  prefs: { view?: string; groupBy?: string },
+) {
+  "use server";
+  const { list, space } = await requireList(listId);
+  const { getSpaceRole } = await import("@/lib/rbac");
+  const session = await (await import("@/lib/auth")).auth();
+  if (!session?.user?.id) return;
+  const role = await getSpaceRole(
+    session.user.id,
+    space.id,
+    (session.user as { platformRole?: string }).platformRole ?? "member",
+  );
+  if (!role) return;
+
+  const updates: Record<string, string | null> = {};
+  if ("view" in prefs) updates.defaultView = prefs.view ?? null;
+  if ("groupBy" in prefs) updates.defaultGroupBy = prefs.groupBy || null;
+  if (Object.keys(updates).length === 0) return;
+
+  await db.update(lists).set(updates).where(eq(lists.id, list.id));
 }
 
 export async function saveTaskLayout(

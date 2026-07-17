@@ -120,10 +120,40 @@ async function recomputePlatformRoles() {
   `);
 }
 
+/**
+ * Deactivate users who are no longer members of any group that grants intranet
+ * access (i.e. any group with a platform_role mapping). This runs after group
+ * memberships are synced so the data is fresh.
+ *
+ * Only runs when at least one platform_role mapping exists — prevents
+ * accidentally deactivating everyone on a fresh install with no mappings yet.
+ */
+async function deactivateNonMembers() {
+  const result = await db.execute<{ count: string }>(sql`
+    select count(*)::text as count from group_role_mappings where target_type = 'platform_role'
+  `);
+  if (Number(result.rows[0]?.count ?? 0) === 0) return; // no access groups configured yet — skip
+
+  await db.execute(sql`
+    update users u
+    set is_active = false, deactivated_at = now()
+    where u.is_active = true
+      and u.is_protected_admin = false
+      and not exists (
+        select 1
+        from user_group_memberships ugm
+        join group_role_mappings m on m.group_id = ugm.group_id
+        where ugm.user_id = u.id
+          and m.target_type = 'platform_role'
+      )
+  `);
+}
+
 export async function runSyncEntra(): Promise<string> {
   const userCount = await syncUsers();
   const groupCount = await syncGroupMemberships();
   await recomputePlatformRoles();
+  await deactivateNonMembers();
   return `synced ${userCount} user changes, ${groupCount} groups`;
 }
 

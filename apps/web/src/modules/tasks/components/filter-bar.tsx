@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Plus, Rows3, SlidersHorizontal, X } from "lucide-react";
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { saveListViewPrefs } from "../actions";
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -488,10 +489,11 @@ interface GroupByOption {
   label: string;
 }
 
-function GroupByPopover({ options }: { options: GroupByOption[] }) {
+function GroupByPopover({ options, listId }: { options: GroupByOption[]; listId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
+  const [, startTransition] = useTransition();
 
   const current = searchParams.get("groupBy") ?? "";
 
@@ -503,6 +505,9 @@ function GroupByPopover({ options }: { options: GroupByOption[] }) {
       params.delete("groupBy");
     }
     router.push(`?${params.toString()}`);
+    startTransition(() => {
+      saveListViewPrefs(listId, { groupBy: value || "" });
+    });
     setOpen(false);
   }
 
@@ -558,11 +563,13 @@ function GroupByPopover({ options }: { options: GroupByOption[] }) {
 // ─── public FilterBar ──────────────────────────────────────────────────────────
 
 export function FilterBar({
+  listId,
   statuses,
   fieldDefs,
   activeUsers,
   view,
 }: {
+  listId: string;
   statuses: { id: string; name: string; color: string }[];
   fieldDefs: { id: string; key: string; label: string; type: string; options: unknown }[];
   activeUsers: { id: string; displayName: string }[];
@@ -616,7 +623,7 @@ export function FilterBar({
   return (
     <div className="flex items-center gap-2">
       <FilterPopover fields={fields} />
-      {view !== "board" && <GroupByPopover options={groupByOptions} />}
+      {view !== "board" && <GroupByPopover options={groupByOptions} listId={listId} />}
     </div>
   );
 }
