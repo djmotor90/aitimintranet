@@ -4,7 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getSpaceRole, requireUser } from "@/lib/rbac";
+import { getListRole, getSpaceRole, requireUser } from "@/lib/rbac";
 import { Board } from "@/modules/tasks/components/board";
 import { FilterBar, type FilterCondition } from "@/modules/tasks/components/filter-bar";
 import { ListLiveRefresh } from "@/modules/tasks/components/list-live-refresh";
@@ -17,8 +17,12 @@ import {
   getListBySlug,
   getSpaceBySlug,
   getStatusesForList,
-  getTasksForList,
+  getTasksPage,
 } from "@/modules/tasks/queries";
+
+const TABLE_PAGE_SIZE = 200;
+/** Board renders every card at once, so it gets a hard cap. */
+const BOARD_LIMIT = 1000;
 
 export default async function ListPage(props: {
   params: Promise<{ spaceSlug: string; listSlug: string }>;
@@ -30,24 +34,21 @@ export default async function ListPage(props: {
   const user = await requireUser();
   const space = await getSpaceBySlug(spaceSlug);
   if (!space) notFound();
-  const role = await getSpaceRole(user.id, space.id, user.platformRole);
-  if (!role) notFound();
   const list = await getListBySlug(space.id, listSlug);
   if (!list) notFound();
+  const role = await getListRole(user.id, list.id, user.platformRole);
+  if (!role) notFound();
+  // Guests can view; members and owners can create/edit tasks.
+  const canEdit = role === "owner" || role === "member";
+  // Settings (statuses/fields/layout) stays gated on space ownership specifically —
+  // a list-direct grant gives content access, not structural control.
+  const isSpaceOwner = (await getSpaceRole(user.id, space.id, user.platformRole)) === "owner";
 
   // URL param wins; fall back to list's persisted default; then "table".
   const view: "table" | "board" =
     sp.view === "board" ? "board"
     : sp.view === "table" ? "table"
     : (list.defaultView === "board" ? "board" : "table");
-
-  const [listStatuses, fieldDefs, items, activeUsers] = await Promise.all([
-    getStatusesForList(list.id),
-    getFieldDefinitions(list.id),
-    getTasksForList(list.id),
-    getActiveUsers(),
-  ]);
-  const userNames = new Map(activeUsers.map((u) => [u.id, u.displayName]));
 
   // ─── parse filter conditions from URL ───────────────────────────────────────
   let conditions: FilterCondition[] = [];
@@ -61,111 +62,21 @@ export default async function ListPage(props: {
   // URL param wins; fall back to list's persisted default.
   const groupBy = sp.groupBy ?? list.defaultGroupBy ?? "";
 
-  // ─── apply filters (server-side) ───────────────────────────────────────────
+  const [listStatuses, fieldDefs, activeUsers, page] = await Promise.all([
+    getStatusesForList(list.id),
+    getFieldDefinitions(list.id),
+    getActiveUsers(),
+    getTasksPage({
+      listId: list.id,
+      conditions,
+      groupBy: view === "table" ? groupBy || undefined : undefined,
+      limit: view === "board" ? BOARD_LIMIT : TABLE_PAGE_SIZE,
+      offset: 0,
+    }),
+  ]);
+  const userNames = new Map(activeUsers.map((u) => [u.id, u.displayName]));
 
-  /** Returns true if a single condition matches the task. */
-  function evalCondition(
-    { field, op, value }: FilterCondition,
-    task: (typeof items)[number]["task"],
-    assignees: (typeof items)[number]["assignees"],
-  ): boolean {
-    // skip conditions with no value (unless op doesn't need one)
-    if (!value && op !== "is_empty" && op !== "is_not_empty") return true;
-
-    const cf = (task.customFields ?? {}) as Record<string, unknown>;
-
-    if (field === "status") {
-      const m = task.statusId === value;
-      return op === "is" ? m : !m;
-    }
-    if (field === "priority") {
-      const m = task.priority === value;
-      return op === "is" ? m : !m;
-    }
-    if (field === "assignee") {
-      const m = assignees.some((a) => a.id === value);
-      return op === "is" ? m : !m;
-    }
-    if (field.startsWith("cf_")) {
-      const defId = field.slice(3);
-      const def = fieldDefs.find((d) => d.id === defId);
-      if (!def) return true;
-      const cfVal = cf[defId];
-
-      switch (def.type) {
-        case "dropdown":
-        case "user": {
-          const m = cfVal === value;
-          return op === "is" ? m : !m;
-        }
-        case "multi_select": {
-          const arr = Array.isArray(cfVal) ? (cfVal as string[]) : [];
-          const m = arr.includes(value);
-          return op === "includes" ? m : !m;
-        }
-        case "checkbox": {
-          return !!cfVal === (value === "true");
-        }
-        case "text":
-        case "textarea":
-        case "url":
-        case "email":
-        case "phone": {
-          const str = String(cfVal ?? "").toLowerCase();
-          const val = value.toLowerCase();
-          if (op === "contains") return str.includes(val);
-          if (op === "not_contains") return !str.includes(val);
-          if (op === "is") return str === val;
-          if (op === "is_not") return str !== val;
-          return true;
-        }
-        case "number": {
-          const num = cfVal != null ? Number(cfVal) : null;
-          const target = Number(value);
-          if (num === null) return false;
-          if (op === "eq") return num === target;
-          if (op === "neq") return num !== target;
-          if (op === "gt") return num > target;
-          if (op === "lt") return num < target;
-          if (op === "gte") return num >= target;
-          if (op === "lte") return num <= target;
-          return true;
-        }
-        case "date": {
-          const dateStr = cfVal ? String(cfVal).slice(0, 10) : null;
-          if (!dateStr) return false;
-          if (op === "is") return dateStr === value;
-          if (op === "before") return dateStr < value;
-          if (op === "after") return dateStr > value;
-          return true;
-        }
-      }
-    }
-    return true;
-  }
-
-  const filtered = items.filter(({ task, assignees }) => {
-    if (conditions.length === 0) return true;
-
-    // Evaluate left-to-right respecting AND / OR conjunctions.
-    // First condition has no conjunction (treated as the base).
-    let result = evalCondition(conditions[0], task, assignees);
-
-    for (let i = 1; i < conditions.length; i++) {
-      const cond = conditions[i];
-      const match = evalCondition(cond, task, assignees);
-      if (cond.conjunction === "or") {
-        result = result || match;
-      } else {
-        // "and" is the default
-        result = result && match;
-      }
-    }
-
-    return result;
-  });
-
-  const boardTasks = filtered.map(({ task, assignees }) => ({
+  const boardTasks = page.items.map(({ task, assignees }) => ({
     id: task.id,
     number: task.number,
     title: task.title,
@@ -196,7 +107,7 @@ export default async function ListPage(props: {
             <ViewToggle listId={list.id} view={view} />
           </Suspense>
 
-          {role === "owner" && (
+          {isSpaceOwner && (
             <Link href={`/tasks/${space.slug}/${list.slug}/settings`}>
               <Button variant="outline" size="sm">
                 <Settings className="size-4" />
@@ -204,13 +115,15 @@ export default async function ListPage(props: {
             </Link>
           )}
 
-          <NewTaskDialog listId={list.id} fieldDefs={fieldDefs} users={activeUsers} />
+          {canEdit && (
+            <NewTaskDialog listId={list.id} fieldDefs={fieldDefs} users={activeUsers} />
+          )}
         </div>
       </div>
 
       {/* ── sub-bar: count + filter + group by ── */}
       <div className="mb-4 flex items-center gap-2">
-        <Badge variant="secondary">{filtered.length} tasks</Badge>
+        <Badge variant="secondary">{page.total} tasks</Badge>
         <Suspense>
           <FilterBar
             listId={list.id}
@@ -220,19 +133,29 @@ export default async function ListPage(props: {
             view={view}
           />
         </Suspense>
+        {view === "board" && page.total > BOARD_LIMIT && (
+          <span className="text-xs text-muted-foreground">
+            Board shows the first {BOARD_LIMIT} tasks — use filters or the table view for the rest.
+          </span>
+        )}
       </div>
 
       {view === "board" ? (
-        <Board statuses={listStatuses} tasks={boardTasks} />
+        <Board statuses={listStatuses} tasks={boardTasks} canEdit={canEdit} />
       ) : (
         <TaskTable
-          items={filtered}
+          items={page.items}
+          totalCount={page.total}
+          groupCounts={page.groupCounts}
+          conditions={conditions}
           statuses={listStatuses}
           fieldDefs={fieldDefs}
           userNames={userNames}
+          activeUsers={activeUsers}
           groupBy={groupBy || undefined}
           listId={list.id}
           initialColumnOrder={(list.tableColumnOrder as string[] | null) ?? undefined}
+          canEdit={canEdit}
         />
       )}
     </div>

@@ -27,7 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <Link href="/" className="mb-6 px-3 text-lg font-semibold tracking-tight">
           AITIM <span className="text-muted-foreground">Intranet</span>
         </Link>
-        <SidebarNav items={items} taskNavTree={taskNavTree} />
+        <SidebarNav items={items} taskNavTree={taskNavTree} isAdmin={user.platformRole === "admin"} />
         {adminItems.length > 0 && (
           <>
             <div className="mt-6 mb-2 px-3 text-xs font-semibold uppercase text-muted-foreground">

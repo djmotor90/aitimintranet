@@ -3,7 +3,7 @@ import { attachments, db, lists, spaces, tasks } from "@aitim/db";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getSpaceRole } from "@/lib/rbac";
+import { getListRole } from "@/lib/rbac";
 import { BUCKETS, putObject } from "@/lib/storage";
 import { logActivity } from "@/modules/tasks/lib/activity";
 
@@ -22,7 +22,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ taskId: string
     .where(eq(tasks.id, taskId));
   if (!row) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const role = await getSpaceRole(session.user.id, row.space.id, session.user.platformRole);
+  const role = await getListRole(session.user.id, row.list.id, session.user.platformRole);
   if (!role || role === "guest") return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const formData = await req.formData();

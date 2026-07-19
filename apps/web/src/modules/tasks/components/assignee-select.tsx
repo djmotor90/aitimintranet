@@ -22,25 +22,37 @@ interface UserOption {
 export function AssigneeSelect({
   taskId,
   users,
-  selectedIds,
+  selectedUsers,
   disabled,
 }: {
   taskId: string;
+  /** Assignable candidates — typically active users only. */
   users: UserOption[];
-  selectedIds: string[];
+  /**
+   * Currently-assigned users with their real display data. Kept separate from
+   * `users` so someone assigned while active (then later deactivated) still
+   * shows up correctly instead of silently disappearing from the picker.
+   */
+  selectedUsers: UserOption[];
   disabled?: boolean;
 }) {
+  const selectedIds = selectedUsers.map((u) => u.id);
   const [pending, startTransition] = useTransition();
   const [optimisticSelectedIds, toggleOptimistic] = useOptimistic(
     selectedIds,
     (current, userId: string) =>
       current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId],
   );
-  const selected = users.filter((u) => optimisticSelectedIds.includes(u.id));
+  const byId = new Map([...users, ...selectedUsers].map((u) => [u.id, u]));
+  const selected = optimisticSelectedIds
+    .map((id) => byId.get(id))
+    .filter((u): u is UserOption => !!u);
   const unselected = users.filter((u) => !optimisticSelectedIds.includes(u.id));
   const selectedLabel =
     selected.length === 0
-      ? "Select assignees"
+      ? disabled
+        ? "—"
+        : "Select assignees"
       : selected.length === 1
         ? selected[0].displayName
         : `${selected.length} selected`;

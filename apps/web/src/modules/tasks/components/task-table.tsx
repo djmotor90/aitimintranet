@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronRight, Columns3 } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  Fragment,
   type DragEvent,
   type PointerEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -14,7 +15,6 @@ import {
   useTransition,
 } from "react";
 import { toast } from "sonner";
-import { UserAvatar } from "@/components/shell/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -35,9 +35,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { TaskWithMeta } from "../queries";
-import { saveListViewPrefs, saveTableColumnOrder } from "../actions";
-import { PRIORITY_STYLES } from "./task-card";
+import type { TaskFilterCondition, TaskWithMeta } from "../queries";
+import { fetchTasksPage, saveListViewPrefs, saveTableColumnOrder } from "../actions";
+import { AssigneeSelect } from "./assignee-select";
+import {
+  CustomFieldEditCell,
+  PrioritySelectCell,
+  StatusSelectCell,
+  TaskDateCell,
+} from "./editable-cells";
 
 interface StatusLike { id: string; name: string; color: string }
 interface FieldDefLike { id: string; key: string; label: string; type: string; options: unknown }
@@ -185,27 +191,76 @@ function FieldContextMenu({
 
 // ─── main component ───────────────────────────────────────────────────────────
 
+const PAGE_SIZE = 200;
+
 export function TaskTable({
   items,
+  totalCount,
+  groupCounts,
+  conditions,
   statuses,
   fieldDefs,
   userNames,
+  activeUsers,
   groupBy,
   listId,
   initialColumnOrder,
+  canEdit = true,
 }: {
+  /** First page of tasks (server-filtered and ordered). */
   items: TaskWithMeta[];
+  /** Total matching rows across all pages. */
+  totalCount: number;
+  /** Per-group totals when groupBy is active (keys match server group keys). */
+  groupCounts?: { key: string; count: number }[] | null;
+  /** Active filter conditions — passed through to follow-up page fetches. */
+  conditions?: TaskFilterCondition[];
   statuses: StatusLike[];
   fieldDefs: FieldDefLike[];
   userNames: Map<string, string>;
+  activeUsers: { id: string; displayName: string; photoKey: string | null }[];
   groupBy?: string;
   listId: string;
   initialColumnOrder?: string[];
+  /** When false, cells are read-only (guests / view-only grants). */
+  canEdit?: boolean;
 }) {
   const statusById = new Map(statuses.map((s) => [s.id, s]));
   const router = useRouter();
   const [, startTransition] = useTransition();
 
+  // ── sparse row cache keyed by absolute offset (ClickUp/Airtable model) ─────
+  // The scrollbar reserves height for ALL rows up front; unloaded offsets render
+  // as skeletons and fill in as pages arrive. Fetched rows stay cached, so
+  // scrolling back up never refetches and the layout never shifts.
+  const [rowsByOffset, setRowsByOffset] = useState<Map<number, TaskWithMeta>>(
+    () => new Map(items.map((it, i) => [i, it])),
+  );
+  const requestedPages = useRef<Set<number>>(new Set([0]));
+  useEffect(() => {
+    setRowsByOffset(new Map(items.map((it, i) => [i, it])));
+    requestedPages.current = new Set([0]);
+  }, [items]);
+
+  function patchRows(fn: (it: TaskWithMeta) => TaskWithMeta) {
+    setRowsByOffset((prev) => {
+      const next = new Map<number, TaskWithMeta>();
+      for (const [offset, it] of prev) next.set(offset, fn(it));
+      return next;
+    });
+  }
+  function patchTask(taskId: string, patch: Partial<TaskWithMeta["task"]>) {
+    patchRows((it) => (it.task.id === taskId ? { ...it, task: { ...it.task, ...patch } } : it));
+  }
+  function patchCustomField(taskId: string, defId: string, value: unknown) {
+    patchRows((it) => {
+      if (it.task.id !== taskId) return it;
+      const cf = { ...(it.task.customFields as Record<string, unknown> | null ?? {}) };
+      if (value === undefined) delete cf[defId];
+      else cf[defId] = value;
+      return { ...it, task: { ...it.task, customFields: cf } };
+    });
+  }
 
   // ── column order ──────────────────────────────────────────────────────────
   const defaultOrder = useMemo(
@@ -270,31 +325,50 @@ export function TaskTable({
     );
   }
 
-  // ── sort ──────────────────────────────────────────────────────────────────
+  // ── sort (server-driven: changing it clears the cache and refetches) ───────
   const [sort, setSort] = useState<{ fieldId: string; dir: "asc" | "desc" } | null>(null);
 
-  const sortedItems = useMemo(() => {
-    if (!sort) return items;
-    const def = fieldDefs.find((d) => d.id === sort.fieldId);
-    if (!def) return items;
-    return [...items].sort((a, b) => {
-      const cfa = (a.task.customFields ?? {}) as Record<string, unknown>;
-      const cfb = (b.task.customFields ?? {}) as Record<string, unknown>;
-      const va = cfa[sort.fieldId];
-      const vb = cfb[sort.fieldId];
-      if (def.type === "number") {
-        const na = Number(va ?? 0), nb = Number(vb ?? 0);
-        return sort.dir === "asc" ? na - nb : nb - na;
+  const fetchPage = useCallback(
+    async (pageIdx: number) => {
+      if (requestedPages.current.has(pageIdx)) return;
+      requestedPages.current.add(pageIdx);
+      try {
+        const page = await fetchTasksPage({
+          listId,
+          conditions,
+          groupBy,
+          sort,
+          offset: pageIdx * PAGE_SIZE,
+          limit: PAGE_SIZE,
+        });
+        setRowsByOffset((prev) => {
+          const next = new Map(prev);
+          page.items.forEach((it, j) => next.set(pageIdx * PAGE_SIZE + j, it));
+          return next;
+        });
+      } catch {
+        requestedPages.current.delete(pageIdx); // retry on next scroll
+        toast.error("Failed to load tasks");
       }
-      if (def.type === "date") {
-        const da = va ? new Date(String(va)).getTime() : 0;
-        const db = vb ? new Date(String(vb)).getTime() : 0;
-        return sort.dir === "asc" ? da - db : db - da;
-      }
-      const sa = String(va ?? ""), sb = String(vb ?? "");
-      return sort.dir === "asc" ? sa.localeCompare(sb) : sb.localeCompare(sa);
-    });
-  }, [items, sort, fieldDefs]);
+    },
+    [listId, conditions, groupBy, sort],
+  );
+
+  // Sort changes invalidate every cached offset.
+  const isFirstSortRender = useRef(true);
+  useEffect(() => {
+    if (isFirstSortRender.current) { isFirstSortRender.current = false; return; }
+    setRowsByOffset(new Map());
+    requestedPages.current = new Set();
+    void fetchPage(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort]);
+
+  /** Everything currently loaded, in offset order (used by calc footers). */
+  const loadedItems = useMemo(
+    () => [...rowsByOffset.entries()].sort((a, b) => a[0] - b[0]).map(([, it]) => it),
+    [rowsByOffset],
+  );
 
   // ── calculate ─────────────────────────────────────────────────────────────
   const [calcFieldIds, setCalcFieldIds] = useState<Set<string>>(new Set());
@@ -460,7 +534,6 @@ export function TaskTable({
 
   // ── cell renderer ─────────────────────────────────────────────────────────
   function renderCell(colId: string, task: TaskWithMeta["task"], assignees: TaskWithMeta["assignees"]) {
-    const status = statusById.get(task.statusId);
     const cf = (task.customFields ?? {}) as Record<string, unknown>;
     switch (colId) {
       case "number":
@@ -471,20 +544,86 @@ export function TaskTable({
             <Link href={`/tasks/task/${task.number}`} className="font-medium hover:underline">{task.title}</Link>
           </TableCell>
         );
-      case "status":
+      case "status": {
+        if (!canEdit) {
+          const st = statusById.get(task.statusId);
+          return (
+            <TableCell key={colId} className="text-sm" style={st ? { color: st.color } : undefined}>
+              {st?.name ?? "—"}
+            </TableCell>
+          );
+        }
         return (
-          <TableCell key={colId}>
-            {status && <Badge variant="outline" style={{ borderColor: status.color, color: status.color }}>{status.name}</Badge>}
+          <TableCell key={colId} className="p-0.5">
+            <StatusSelectCell
+              taskId={task.id}
+              statusId={task.statusId}
+              statuses={statuses}
+              onSaved={(next) => patchTask(task.id, { statusId: next })}
+            />
           </TableCell>
         );
-      case "priority":
+      }
+      case "priority": {
+        if (!canEdit) {
+          return (
+            <TableCell key={colId} className="text-sm capitalize">
+              {task.priority ?? "—"}
+            </TableCell>
+          );
+        }
         return (
-          <TableCell key={colId}>
-            {task.priority && <Badge variant="secondary" className={cn("text-xs", PRIORITY_STYLES[task.priority])}>{task.priority}</Badge>}
+          <TableCell key={colId} className="p-0.5">
+            <PrioritySelectCell
+              taskId={task.id}
+              priority={task.priority}
+              onSaved={(next) => patchTask(task.id, { priority: next })}
+            />
           </TableCell>
         );
-      case "due": return <TableCell key={colId} className="text-sm">{task.dueDate ?? "—"}</TableCell>;
-      case "start_date": return <TableCell key={colId} className="text-sm">{task.startDate ?? "—"}</TableCell>;
+      }
+      case "due": {
+        if (!canEdit) {
+          return (
+            <TableCell key={colId} className="text-sm">
+              {task.dueDate
+                ? new Date(task.dueDate).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })
+                : "—"}
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            <TaskDateCell
+              taskId={task.id}
+              field="dueDate"
+              value={task.dueDate}
+              onSaved={(next) => patchTask(task.id, { dueDate: next })}
+            />
+          </TableCell>
+        );
+      }
+      case "start_date": {
+        if (!canEdit) {
+          return (
+            <TableCell key={colId} className="text-sm">
+              {task.startDate
+                ? new Date(task.startDate).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })
+                : "—"}
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            <TaskDateCell
+              taskId={task.id}
+              field="startDate"
+              value={task.startDate}
+              onSaved={(next) => patchTask(task.id, { startDate: next })}
+            />
+          </TableCell>
+        );
+      }
       case "created_at": return (
         <TableCell key={colId} className="text-sm">
           {task.createdAt ? new Date(task.createdAt).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"}
@@ -497,12 +636,13 @@ export function TaskTable({
       );
       case "assignees":
         return (
-          <TableCell key={colId}>
-            <span className="flex -space-x-1.5">
-              {assignees.map((a) => (
-                <UserAvatar key={a.id} userId={a.id} name={a.displayName} hasPhoto={!!a.photoKey} className="size-6 ring-2 ring-background" />
-              ))}
-            </span>
+          <TableCell key={colId} className="p-0.5" onClick={(e) => e.stopPropagation()}>
+            <AssigneeSelect
+              taskId={task.id}
+              users={activeUsers}
+              selectedUsers={assignees}
+              disabled={!canEdit}
+            />
           </TableCell>
         );
       default:
@@ -510,68 +650,168 @@ export function TaskTable({
           const defId = colId.slice(6);
           const def = fieldDefs.find((d) => d.id === defId);
           if (!def) return null;
-          return <TableCell key={colId} className="truncate text-sm">{renderFieldValue(def, cf[defId], userNames)}</TableCell>;
+          if (!canEdit) {
+            return (
+              <TableCell key={colId} className="truncate text-sm">
+                {renderFieldValue(def, cf[defId], userNames)}
+              </TableCell>
+            );
+          }
+          return (
+            <TableCell key={colId} className="p-0.5">
+              <CustomFieldEditCell
+                taskId={task.id}
+                def={def}
+                value={cf[defId]}
+                users={activeUsers}
+                onSaved={(next) => patchCustomField(task.id, defId, next)}
+              />
+            </TableCell>
+          );
         }
         return null;
     }
   }
 
-  function renderTaskRow(task: TaskWithMeta["task"], assignees: TaskWithMeta["assignees"]) {
+  function renderTaskRow(
+    vIndex: number,
+    task: TaskWithMeta["task"],
+    assignees: TaskWithMeta["assignees"],
+  ) {
     return (
-      <TableRow key={task.id}>
+      <TableRow key={task.id} data-index={vIndex} ref={virtualizer.measureElement}>
         {orderedColumns.map((col) => renderCell(col.id, task, assignees))}
       </TableRow>
     );
   }
 
-  // ── grouping ──────────────────────────────────────────────────────────────
+  // ── grouping: fixed-position segments computed from server group counts ────
+  // Group sizes are known up front (groupCounts is server-ordered to match the
+  // row ordering), so every group header's absolute position — and every task
+  // row's absolute offset — is known before any rows load.
   const effectiveGroupBy = groupBy;
 
-  const groups = useMemo<Group[] | null>(() => {
-    if (!effectiveGroupBy) return null;
-    function getGroupKey(item: TaskWithMeta): string {
-      if (effectiveGroupBy === "status") return item.task.statusId ?? "__none__";
-      if (effectiveGroupBy === "priority") return item.task.priority ?? "__none__";
-      if (effectiveGroupBy!.startsWith("cf_")) {
-        const defId = effectiveGroupBy!.slice(3);
-        const cf = (item.task.customFields ?? {}) as Record<string, unknown>;
-        const val = cf[defId];
-        if (val === null || val === undefined || val === "") return "__none__";
-        return String(val);
-      }
-      return "__none__";
-    }
-    function getGroupMeta(key: string): { label: string; color?: string } {
+  const getGroupMeta = useCallback(
+    (key: string): { label: string; color?: string } => {
       if (key === "__none__") return { label: "No value" };
-      if (effectiveGroupBy === "status") { const s = statusById.get(key); return { label: s?.name ?? key, color: s?.color }; }
+      if (effectiveGroupBy === "status") {
+        const s = statuses.find((x) => x.id === key);
+        return { label: s?.name ?? key, color: s?.color };
+      }
       if (effectiveGroupBy === "priority") {
         return { label: { urgent: "Urgent", high: "High", normal: "Normal", low: "Low" }[key] ?? key };
       }
-      if (effectiveGroupBy!.startsWith("cf_")) {
-        const def = fieldDefs.find((d) => d.id === effectiveGroupBy!.slice(3));
+      if (effectiveGroupBy?.startsWith("cf_")) {
+        const def = fieldDefs.find((d) => d.id === effectiveGroupBy.slice(3));
         if (!def) return { label: key };
         if (def.type === "checkbox") return { label: key === "true" ? "Yes" : "No" };
         return { label: renderFieldValue(def, key, userNames) };
       }
       return { label: key };
-    }
-    const groupMap = new Map<string, TaskWithMeta[]>();
-    for (const item of sortedItems) {
-      const key = getGroupKey(item);
-      const arr = groupMap.get(key) ?? [];
-      arr.push(item);
-      groupMap.set(key, arr);
-    }
-    const entries = [...groupMap.entries()];
-    const noValueIdx = entries.findIndex(([k]) => k === "__none__");
-    if (noValueIdx > -1) { const [nv] = entries.splice(noValueIdx, 1); entries.push(nv); }
-    return entries.map(([key, groupItems]) => ({ key, ...getGroupMeta(key), items: groupItems }));
-  }, [effectiveGroupBy, sortedItems, statusById, fieldDefs, userNames]);
+    },
+    [effectiveGroupBy, statuses, fieldDefs, userNames],
+  );
+
+  interface GroupSegment { key: string; label: string; color?: string; count: number; startOffset: number }
+  const groupSegments = useMemo<GroupSegment[] | null>(() => {
+    if (!effectiveGroupBy || !groupCounts) return null;
+    let offset = 0;
+    return groupCounts.map((g) => {
+      const seg = { key: g.key, ...getGroupMeta(g.key), count: g.count, startOffset: offset };
+      offset += g.count;
+      return seg;
+    });
+  }, [effectiveGroupBy, groupCounts, getGroupMeta]);
 
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   function toggleGroup(key: string) {
     setCollapsedGroups((prev) => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next; });
   }
+
+  // ── virtual row model over the FULL dataset (loaded or not) ────────────────
+  type RowEntry =
+    | { kind: "header"; seg: GroupSegment }
+    | { kind: "task"; offset: number }
+    | { kind: "calc"; seg: GroupSegment };
+
+  const showCalcFooterRows = calcFieldIds.size > 0;
+
+  // Per-segment entry index ranges (grouped mode only).
+  const segmentRanges = useMemo(() => {
+    if (!groupSegments) return null;
+    let cursor = 0;
+    const ranges = groupSegments.map((seg) => {
+      const collapsed = collapsedGroups.has(seg.key);
+      const bodyRows = collapsed ? 0 : seg.count + (showCalcFooterRows ? 1 : 0);
+      const r = { seg, headerIndex: cursor, bodyRows, collapsed };
+      cursor += 1 + bodyRows;
+      return r;
+    });
+    return { ranges, totalEntries: cursor };
+  }, [groupSegments, collapsedGroups, showCalcFooterRows]);
+
+  const virtualCount = segmentRanges ? segmentRanges.totalEntries : totalCount;
+
+  const resolveEntry = useCallback(
+    (index: number): RowEntry => {
+      if (!segmentRanges) return { kind: "task", offset: index };
+      // Binary search the segment whose entry range contains this index.
+      const { ranges } = segmentRanges;
+      let lo = 0;
+      let hi = ranges.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (ranges[mid].headerIndex <= index) lo = mid;
+        else hi = mid - 1;
+      }
+      const r = ranges[lo];
+      if (index === r.headerIndex) return { kind: "header", seg: r.seg };
+      const within = index - r.headerIndex - 1;
+      if (showCalcFooterRows && within === r.seg.count) return { kind: "calc", seg: r.seg };
+      return { kind: "task", offset: r.seg.startOffset + within };
+    },
+    [segmentRanges, showCalcFooterRows],
+  );
+
+  // State (not a ref) so the virtualizer re-initializes its scroll listener
+  // once the element exists — a ref stays null through the first render and
+  // the subscription would never attach.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: virtualCount,
+    getScrollElement: () => scrollEl,
+    estimateSize: (i) => (resolveEntry(i).kind === "header" ? 42 : 37),
+    overscan: 12,
+  });
+  const virtualRows = virtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom =
+    virtualRows.length > 0 ? virtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
+
+  // Fetch every page touching the visible window, plus one page ahead and one
+  // behind (prefetch), so skeletons are rarely seen at normal scroll speeds.
+  const firstVirtualIndex = virtualRows.length > 0 ? virtualRows[0].index : 0;
+  const lastVirtualIndex = virtualRows.length > 0 ? virtualRows[virtualRows.length - 1].index : 0;
+  useEffect(() => {
+    if (totalCount === 0) return;
+    let minOffset = Number.POSITIVE_INFINITY;
+    let maxOffset = -1;
+    for (const v of virtualRows) {
+      const e = resolveEntry(v.index);
+      if (e.kind !== "task") continue;
+      if (e.offset < minOffset) minOffset = e.offset;
+      if (e.offset > maxOffset) maxOffset = e.offset;
+    }
+    if (maxOffset < 0) return;
+    const from = Math.max(0, minOffset - PAGE_SIZE);
+    const to = Math.min(totalCount - 1, maxOffset + PAGE_SIZE);
+    const lastPage = Math.floor(to / PAGE_SIZE);
+    for (let p = Math.floor(from / PAGE_SIZE); p <= lastPage; p++) {
+      if (!requestedPages.current.has(p)) void fetchPage(p);
+    }
+  // resolveEntry/virtualRows identities churn every render; the index bounds are the real inputs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstVirtualIndex, lastVirtualIndex, totalCount, fetchPage, rowsByOffset.size]);
 
   const totalWidth = orderedColumns.reduce((sum, col) => sum + columnWidth(col), 0);
   const colSpan = orderedColumns.length;
@@ -583,7 +823,7 @@ export function TaskTable({
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* toolbar */}
       <div className="flex justify-end">
         <DropdownMenu>
@@ -626,11 +866,12 @@ export function TaskTable({
         </DropdownMenu>
       </div>
 
+      <div ref={setScrollEl} className="min-h-0 flex-1 overflow-auto">
       <Table className="table-fixed" style={{ width: totalWidth }}>
         <colgroup>
           {orderedColumns.map((col) => <col key={col.id} style={{ width: columnWidth(col) }} />)}
         </colgroup>
-        <TableHeader>
+        <TableHeader className="sticky top-0 z-10 bg-background">
           <TableRow>
             {orderedColumns.map((col) => {
               const isCustom = col.id.startsWith("field-");
@@ -672,63 +913,98 @@ export function TaskTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {groups ? (
-            groups.length === 0 ? (
-              <TableRow><TableCell colSpan={colSpan} className="text-muted-foreground">No tasks match.</TableCell></TableRow>
-            ) : (
-              groups.map((group) => {
-                const collapsed = collapsedGroups.has(group.key);
-                return (
-                  <Fragment key={group.key}>
-                    <TableRow className="cursor-pointer bg-muted/40 hover:bg-muted/60" onClick={() => toggleGroup(group.key)}>
-                      <TableCell colSpan={colSpan} className="py-2">
-                        <div className="flex items-center gap-2">
-                          <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground transition-transform duration-150", !collapsed && "rotate-90")} />
-                          {group.color && <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />}
-                          <span className="text-sm font-semibold">{group.label}</span>
-                          <Badge variant="secondary" className="h-5 px-1.5 text-xs">{group.items.length}</Badge>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                    {!collapsed && group.items.map(({ task, assignees }) => renderTaskRow(task, assignees))}
-                    {/* per-group calc footer */}
-                    {!collapsed && showCalcFooter && (
-                      <TableRow className="bg-muted/20 text-xs text-muted-foreground">
-                        {orderedColumns.map((col) => {
-                          if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
-                          const defId = col.id.slice(6);
-                          if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
-                          return <TableCell key={col.id} className="font-medium">{calcValue(defId, group.items)}</TableCell>;
-                        })}
-                      </TableRow>
-                    )}
-                  </Fragment>
-                );
-              })
-            )
-          ) : (
-            <>
-              {sortedItems.map(({ task, assignees }) => renderTaskRow(task, assignees))}
-              {sortedItems.length === 0 && (
-                <TableRow><TableCell colSpan={colSpan} className="text-muted-foreground">No tasks match.</TableCell></TableRow>
-              )}
-            </>
+          {virtualCount === 0 && (
+            <TableRow><TableCell colSpan={colSpan} className="text-muted-foreground">No tasks match.</TableCell></TableRow>
+          )}
+          {paddingTop > 0 && (
+            <tr aria-hidden style={{ height: paddingTop }}><td colSpan={colSpan} className="p-0" /></tr>
+          )}
+          {virtualRows.map((vRow) => {
+            const entry = resolveEntry(vRow.index);
+            if (entry.kind === "header") {
+              const seg = entry.seg;
+              const collapsed = collapsedGroups.has(seg.key);
+              return (
+                <TableRow
+                  key={`h-${seg.key}`}
+                  data-index={vRow.index}
+                  ref={virtualizer.measureElement}
+                  className="cursor-pointer bg-muted/40 hover:bg-muted/60"
+                  onClick={() => toggleGroup(seg.key)}
+                >
+                  <TableCell colSpan={colSpan} className="py-2">
+                    <div className="flex items-center gap-2">
+                      <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground transition-transform duration-150", !collapsed && "rotate-90")} />
+                      {seg.color && <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: seg.color }} />}
+                      <span className="text-sm font-semibold">{seg.label}</span>
+                      <Badge variant="secondary" className="h-5 px-1.5 text-xs">{seg.count}</Badge>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            }
+            if (entry.kind === "calc") {
+              const seg = entry.seg;
+              const segItems: TaskWithMeta[] = [];
+              for (let o = seg.startOffset; o < seg.startOffset + seg.count; o++) {
+                const it = rowsByOffset.get(o);
+                if (it) segItems.push(it);
+              }
+              return (
+                <TableRow
+                  key={`c-${seg.key}`}
+                  data-index={vRow.index}
+                  ref={virtualizer.measureElement}
+                  className="bg-muted/20 text-xs text-muted-foreground"
+                >
+                  {orderedColumns.map((col) => {
+                    if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
+                    const defId = col.id.slice(6);
+                    if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
+                    return <TableCell key={col.id} className="font-medium">{calcValue(defId, segItems)}</TableCell>;
+                  })}
+                </TableRow>
+              );
+            }
+            const item = rowsByOffset.get(entry.offset);
+            if (!item) {
+              // Skeleton placeholder — same height as a data row, filled in when its page lands.
+              return (
+                <TableRow
+                  key={`skeleton-${entry.offset}`}
+                  data-index={vRow.index}
+                  ref={virtualizer.measureElement}
+                  className="animate-pulse"
+                >
+                  {orderedColumns.map((col, i) => (
+                    <TableCell key={col.id} className="py-2.5">
+                      <div className="h-3 rounded bg-muted" style={{ width: i === 1 ? "80%" : "55%" }} />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              );
+            }
+            return renderTaskRow(vRow.index, item.task, item.assignees);
+          })}
+          {paddingBottom > 0 && (
+            <tr aria-hidden style={{ height: paddingBottom }}><td colSpan={colSpan} className="p-0" /></tr>
           )}
         </TableBody>
-        {/* global calc footer (flat view) */}
-        {!groups && showCalcFooter && (
+        {/* global calc footer (flat view) — computed over loaded rows */}
+        {!groupSegments && showCalcFooter && (
           <TableFooter>
             <TableRow className="bg-muted/20 text-xs text-muted-foreground">
               {orderedColumns.map((col) => {
                 if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
                 const defId = col.id.slice(6);
                 if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
-                return <TableCell key={col.id} className="font-medium">{calcValue(defId, sortedItems)}</TableCell>;
+                return <TableCell key={col.id} className="font-medium">{calcValue(defId, loadedItems)}</TableCell>;
               })}
             </TableRow>
           </TableFooter>
         )}
       </Table>
+      </div>
 
       {/* context menu */}
       {ctxMenu && ctxDef && (

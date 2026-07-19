@@ -2,7 +2,7 @@ import { attachments, db, lists, spaces, tasks } from "@aitim/db";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getSpaceRole } from "@/lib/rbac";
+import { getListRole } from "@/lib/rbac";
 import { BUCKETS, getObjectStream } from "@/lib/storage";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -11,7 +11,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
   const { id } = await ctx.params;
   const [row] = await db
-    .select({ attachment: attachments, space: spaces })
+    .select({ attachment: attachments, list: lists, space: spaces })
     .from(attachments)
     .innerJoin(tasks, eq(attachments.taskId, tasks.id))
     .innerJoin(lists, eq(tasks.listId, lists.id))
@@ -19,7 +19,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     .where(eq(attachments.id, id));
   if (!row) return new NextResponse(null, { status: 404 });
 
-  const role = await getSpaceRole(session.user.id, row.space.id, session.user.platformRole);
+  const role = await getListRole(session.user.id, row.list.id, session.user.platformRole);
   if (!role) return new NextResponse(null, { status: 403 });
 
   try {

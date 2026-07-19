@@ -545,6 +545,7 @@ export function LayoutBuilder({
   return (
     <div className="flex flex-col gap-4">
       <DndContext
+        id="layout-builder-dnd"
         sensors={sensors}
         collisionDetection={closestCenter}
         onDragStart={onDragStart}

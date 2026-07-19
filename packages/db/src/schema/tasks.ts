@@ -101,6 +101,53 @@ export const spaceMembers = pgTable(
   ],
 );
 
+export const folders = pgTable(
+  "folders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    /** Null for a top-level folder directly under the space. */
+    parentFolderId: uuid("parent_folder_id"),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    position: text("position").notNull().default("a0"),
+    isArchived: boolean("is_archived").notNull().default(false),
+    /** When true, space (and parent-folder) membership does not grant access — only direct folderMembers rows do. */
+    isPrivate: boolean("is_private").notNull().default(false),
+    createdBy: uuid("created_by").references(() => users.id),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("folders_space_slug_idx").on(t.spaceId, t.slug),
+    index("folders_parent_idx").on(t.parentFolderId),
+  ],
+);
+
+export const folderMembers = pgTable(
+  "folder_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    folderId: uuid("folder_id")
+      .notNull()
+      .references(() => folders.id, { onDelete: "cascade" }),
+    principalType: principalType("principal_type").notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id"),
+    role: spaceRole("role").notNull().default("member"),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("folder_members_user_idx")
+      .on(t.folderId, t.userId)
+      .where(sql`${t.userId} is not null`),
+    uniqueIndex("folder_members_group_idx")
+      .on(t.folderId, t.groupId)
+      .where(sql`${t.groupId} is not null`),
+  ],
+);
+
 export const lists = pgTable(
   "lists",
   {
@@ -108,6 +155,8 @@ export const lists = pgTable(
     spaceId: uuid("space_id")
       .notNull()
       .references(() => spaces.id, { onDelete: "cascade" }),
+    /** Null when the list sits directly under the space, not inside a folder. */
+    folderId: uuid("folder_id").references(() => folders.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     description: text("description"),
@@ -120,9 +169,34 @@ export const lists = pgTable(
     defaultView: text("default_view"),
     /** Persisted default groupBy, e.g. "status" | "cf_{id}" | null */
     defaultGroupBy: text("default_group_by"),
+    /** When true, space (and parent-folder) membership does not grant access — only direct listMembers rows do. */
+    isPrivate: boolean("is_private").notNull().default(false),
     ...timestamps,
   },
   (t) => [uniqueIndex("lists_space_slug_idx").on(t.spaceId, t.slug)],
+);
+
+export const listMembers = pgTable(
+  "list_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listId: uuid("list_id")
+      .notNull()
+      .references(() => lists.id, { onDelete: "cascade" }),
+    principalType: principalType("principal_type").notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id"),
+    role: spaceRole("role").notNull().default("member"),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("list_members_user_idx")
+      .on(t.listId, t.userId)
+      .where(sql`${t.userId} is not null`),
+    uniqueIndex("list_members_group_idx")
+      .on(t.listId, t.groupId)
+      .where(sql`${t.groupId} is not null`),
+  ],
 );
 
 export const statuses = pgTable(
@@ -173,6 +247,8 @@ export const tasks = pgTable(
     index("tasks_list_status_idx").on(t.listId, t.statusId),
     index("tasks_due_date_idx").on(t.dueDate),
     index("tasks_custom_fields_gin_idx").using("gin", t.customFields),
+    /** Supports the paginated list-view ordering. */
+    index("tasks_list_position_created_idx").on(t.listId, t.position, t.createdAt),
   ],
 );
 
@@ -326,13 +402,38 @@ export const taskAssigneesRelations = relations(taskAssignees, ({ one }) => ({
 
 export const listsRelations = relations(lists, ({ one, many }) => ({
   space: one(spaces, { fields: [lists.spaceId], references: [spaces.id] }),
+  folder: one(folders, { fields: [lists.folderId], references: [folders.id] }),
   statuses: many(statuses),
   tasks: many(tasks),
   customFieldDefinitions: many(customFieldDefinitions),
+  members: many(listMembers),
+}));
+
+export const listMembersRelations = relations(listMembers, ({ one }) => ({
+  list: one(lists, { fields: [listMembers.listId], references: [lists.id] }),
+  user: one(users, { fields: [listMembers.userId], references: [users.id] }),
+}));
+
+export const foldersRelations = relations(folders, ({ one, many }) => ({
+  space: one(spaces, { fields: [folders.spaceId], references: [spaces.id] }),
+  parentFolder: one(folders, {
+    fields: [folders.parentFolderId],
+    references: [folders.id],
+    relationName: "folder_subfolders",
+  }),
+  subfolders: many(folders, { relationName: "folder_subfolders" }),
+  lists: many(lists),
+  members: many(folderMembers),
+}));
+
+export const folderMembersRelations = relations(folderMembers, ({ one }) => ({
+  folder: one(folders, { fields: [folderMembers.folderId], references: [folders.id] }),
+  user: one(users, { fields: [folderMembers.userId], references: [users.id] }),
 }));
 
 export const spacesRelations = relations(spaces, ({ many }) => ({
   lists: many(lists),
+  folders: many(folders),
   members: many(spaceMembers),
 }));
 

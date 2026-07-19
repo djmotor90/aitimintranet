@@ -1,11 +1,55 @@
+import { Folder } from "lucide-react";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { getSpaceRole, requireUser } from "@/lib/rbac";
-import { createList } from "@/modules/tasks/actions";
-import { getListsForSpace, getSpaceBySlug } from "@/modules/tasks/queries";
+import { SpaceSettingsMenu } from "@/modules/tasks/components/space-settings-menu";
+import {
+  getActiveUsers,
+  getSpaceBySlug,
+  getSpaceContentTree,
+  getSpaceMembers,
+  type FolderNavNode,
+  type ListNavNode,
+} from "@/modules/tasks/queries";
+
+function ListCard({ list, spaceSlug }: { list: ListNavNode; spaceSlug: string }) {
+  return (
+    <Link href={`/tasks/${spaceSlug}/${list.slug}`}>
+      <Card className="transition-colors hover:bg-muted/50">
+        <CardHeader>
+          <CardTitle>{list.name}</CardTitle>
+          {list.description && <CardDescription>{list.description}</CardDescription>}
+        </CardHeader>
+      </Card>
+    </Link>
+  );
+}
+
+function FolderSection({ folder, spaceSlug }: { folder: FolderNavNode; spaceSlug: string }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+        <Folder className="size-4" />
+        {folder.name}
+      </div>
+      {folder.lists.length > 0 && (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {folder.lists.map((list) => (
+            <ListCard key={list.id} list={list} spaceSlug={spaceSlug} />
+          ))}
+        </div>
+      )}
+      {folder.subfolders.length > 0 && (
+        <div className="ml-6 flex flex-col gap-3 border-l pl-4">
+          {folder.subfolders.map((sub) => (
+            <FolderSection key={sub.id} folder={sub} spaceSlug={spaceSlug} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default async function SpacePage(props: { params: Promise<{ spaceSlug: string }> }) {
   const { spaceSlug } = await props.params;
@@ -15,42 +59,44 @@ export default async function SpacePage(props: { params: Promise<{ spaceSlug: st
   const role = await getSpaceRole(user.id, space.id, user.platformRole);
   if (!role) notFound();
 
-  const spaceLists = await getListsForSpace(space.id);
+  const tree = await getSpaceContentTree(space.id, user.id, user.platformRole, role === "owner");
+  const [members, activeUsers] = role === "owner"
+    ? await Promise.all([getSpaceMembers(space.id), getActiveUsers()])
+    : [[], []];
+  const memberUserIds = new Set(members.map((m) => m.userId));
+  const addableUsers = activeUsers.filter((u) => !memberUserIds.has(u.id));
 
   return (
     <div className="w-full">
-      <h1 className="mb-1 text-2xl font-semibold" style={space.color ? { color: space.color } : undefined}>
-        {space.name}
-      </h1>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold" style={space.color ? { color: space.color } : undefined}>
+          {space.name}
+        </h1>
+        {role === "owner" && (
+          <SpaceSettingsMenu spaceId={space.id} members={members} addableUsers={addableUsers} />
+        )}
+      </div>
       <p className="mb-6 text-sm text-muted-foreground">
         Space · prefix {space.taskPrefix} · your role: {role}
       </p>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        {spaceLists.map((list) => (
-          <Link key={list.id} href={`/tasks/${space.slug}/${list.slug}`}>
-            <Card className="transition-colors hover:bg-muted/50">
-              <CardHeader>
-                <CardTitle>{list.name}</CardTitle>
-                {list.description && <CardDescription>{list.description}</CardDescription>}
-              </CardHeader>
-            </Card>
-          </Link>
+      <div className="flex flex-col gap-6">
+        {tree.folders.map((folder) => (
+          <FolderSection key={folder.id} folder={folder} spaceSlug={space.slug} />
         ))}
-      </div>
 
-      {role === "owner" && (
-        <form action={createList} className="mt-8 flex max-w-sm items-end gap-2">
-          <input type="hidden" name="spaceId" value={space.id} />
-          <div className="flex-1">
-            <label htmlFor="name" className="mb-1 block text-sm font-medium">
-              New list
-            </label>
-            <Input id="name" name="name" placeholder="e.g. Inspections" required />
+        {tree.lists.length > 0 && (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {tree.lists.map((list) => (
+              <ListCard key={list.id} list={list} spaceSlug={space.slug} />
+            ))}
           </div>
-          <Button type="submit">Create</Button>
-        </form>
-      )}
+        )}
+
+        {tree.folders.length === 0 && tree.lists.length === 0 && (
+          <p className="text-sm text-muted-foreground">No lists or folders yet.</p>
+        )}
+      </div>
     </div>
   );
 }

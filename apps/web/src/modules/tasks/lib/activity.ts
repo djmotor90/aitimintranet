@@ -23,12 +23,24 @@ export interface ActivityEntry {
     | "task.archived"
     | "comment.created"
     | "attachment.added"
+    | "space.created"
     | "list.created"
     | "status.created"
     | "status.updated"
     | "status.deleted"
     | "field.created"
-    | "field.archived";
+    | "field.archived"
+    | "space.member_added"
+    | "space.member_removed"
+    | "list.member_added"
+    | "list.member_removed"
+    | "list.privacy_changed"
+    | "list.moved"
+    | "folder.created"
+    | "folder.privacy_changed"
+    | "folder.member_added"
+    | "folder.member_removed"
+    | "folder.moved";
   payload?: Record<string, unknown>;
 }
 

@@ -8,17 +8,25 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { assertSpaceRole, requireUser } from "@/lib/rbac";
 import {
+  addListMember,
   archiveFieldDefinition,
   createStatus,
-  deleteStatus,
+  removeListMember,
+  setListPrivacy,
 } from "@/modules/tasks/actions";
 import { FieldDefinitionForm } from "@/modules/tasks/components/field-definition-form";
 import { LayoutBuilder } from "@/modules/tasks/components/layout-builder";
+import { ListPrivacyToggle } from "@/modules/tasks/components/list-privacy-toggle";
+import { SharingDialogBody } from "@/modules/tasks/components/sharing-dialog-body";
+import { StatusManager } from "@/modules/tasks/components/status-manager";
 import { defaultLayout, type TaskLayout } from "@/modules/tasks/layout-types";
 import {
+  getActiveUsers,
   getFieldDefinitions,
   getListBySlug,
+  getListMembers,
   getSpaceBySlug,
+  getSpaceMembers,
   getStatusesForList,
 } from "@/modules/tasks/queries";
 
@@ -36,10 +44,15 @@ export default async function ListSettingsPage(props: {
   const list = await getListBySlug(space.id, listSlug);
   if (!list) notFound();
 
-  const [listStatuses, fieldDefs] = await Promise.all([
+  const [listStatuses, fieldDefs, inheritedMembers, directMembers, activeUsers] = await Promise.all([
     getStatusesForList(list.id),
     getFieldDefinitions(list.id, true),
+    getSpaceMembers(space.id),
+    getListMembers(list.id),
+    getActiveUsers(),
   ]);
+  const directMemberIds = new Set(directMembers.map((m) => m.userId));
+  const addableUsers = activeUsers.filter((u) => !directMemberIds.has(u.id));
 
   const activeFieldDefs = fieldDefs.filter((f) => !f.isArchived);
   const savedLayout = list.taskLayout as TaskLayout | null;
@@ -61,6 +74,7 @@ export default async function ListSettingsPage(props: {
           <TabsTrigger value="layout">Task layout</TabsTrigger>
           <TabsTrigger value="statuses">Statuses</TabsTrigger>
           <TabsTrigger value="fields">Custom fields</TabsTrigger>
+          <TabsTrigger value="sharing">Sharing</TabsTrigger>
         </TabsList>
 
         {/* ── task layout tab ── */}
@@ -89,45 +103,17 @@ export default async function ListSettingsPage(props: {
           <Card>
             <CardHeader>
               <CardTitle>Statuses</CardTitle>
-              <CardDescription>Workflow columns for this list, in order.</CardDescription>
+              <CardDescription>
+                Workflow columns for this list. Drag to reorder or move between groups; use the
+                pencil to rename or recolor.
+              </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-6">
-              {(
-                [
-                  { category: "open",      label: "Not Started", color: "text-slate-500" },
-                  { category: "active",    label: "Active",      color: "text-blue-500" },
-                  { category: "done",      label: "Done",        color: "text-green-500" },
-                  { category: "cancelled", label: "Closed",      color: "text-rose-500" },
-                ] as const
-              ).map(({ category, label, color }) => {
-                const group = listStatuses.filter((s) => s.category === category);
-                return (
-                  <div key={category}>
-                    <p className={`mb-2 text-xs font-semibold uppercase tracking-wider ${color}`}>
-                      {label}
-                    </p>
-                    {group.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No statuses in this group.</p>
-                    ) : (
-                      <ul className="flex flex-col gap-2">
-                        {group.map((s) => (
-                          <li key={s.id} className="flex items-center gap-2">
-                            <span className="size-3 rounded-full" style={{ backgroundColor: s.color }} />
-                            <span className="font-medium">{s.name}</span>
-                            {list.defaultStatusId === s.id && <Badge variant="secondary">default</Badge>}
-                            <form action={deleteStatus} className="ml-auto">
-                              <input type="hidden" name="statusId" value={s.id} />
-                              <Button variant="ghost" size="sm" type="submit">
-                                Delete
-                              </Button>
-                            </form>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                );
-              })}
+              <StatusManager
+                listId={list.id}
+                initialStatuses={listStatuses}
+                defaultStatusId={list.defaultStatusId}
+              />
 
               <form action={createStatus} className="flex flex-wrap items-end gap-2 border-t pt-4">
                 <input type="hidden" name="listId" value={list.id} />
@@ -191,6 +177,34 @@ export default async function ListSettingsPage(props: {
                 )}
               </ul>
               <FieldDefinitionForm listId={list.id} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── sharing tab ── */}
+        <TabsContent value="sharing">
+          <Card>
+            <CardHeader>
+              <CardTitle>Sharing</CardTitle>
+              <CardDescription>
+                <strong>Public</strong> (default): every space member gets access automatically.{" "}
+                <strong>Private</strong>: nobody carries over — you add exactly who should have
+                access, including people who aren&apos;t in the space at all.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <ListPrivacyToggle listId={list.id} isPrivate={list.isPrivate} />
+              <SharingDialogBody
+                idFieldName="listId"
+                idValue={list.id}
+                members={directMembers}
+                addableUsers={addableUsers}
+                addAction={addListMember}
+                removeAction={removeListMember}
+                inheritedMembers={inheritedMembers}
+                isPrivate={list.isPrivate}
+                lockAction={setListPrivacy}
+              />
             </CardContent>
           </Card>
         </TabsContent>

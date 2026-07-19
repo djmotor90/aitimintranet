@@ -149,11 +149,34 @@ async function deactivateNonMembers() {
   `);
 }
 
+/**
+ * Reactivate users who regained access, i.e. are now members of a group that
+ * grants a platform_role but were previously deactivated (e.g. by a prior run
+ * of deactivateNonMembers() racing ahead of Graph's group-membership
+ * propagation). Runs after group memberships are synced so the data is fresh.
+ */
+async function reactivateMembers() {
+  await db.execute(sql`
+    update users u
+    set is_active = true, deactivated_at = null
+    where u.is_active = false
+      and u.is_protected_admin = false
+      and exists (
+        select 1
+        from user_group_memberships ugm
+        join group_role_mappings m on m.group_id = ugm.group_id
+        where ugm.user_id = u.id
+          and m.target_type = 'platform_role'
+      )
+  `);
+}
+
 export async function runSyncEntra(): Promise<string> {
   const userCount = await syncUsers();
   const groupCount = await syncGroupMemberships();
   await recomputePlatformRoles();
   await deactivateNonMembers();
+  await reactivateMembers();
   return `synced ${userCount} user changes, ${groupCount} groups`;
 }
 

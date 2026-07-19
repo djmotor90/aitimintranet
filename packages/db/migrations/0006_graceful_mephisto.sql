@@ -1,0 +1,1 @@
+CREATE INDEX "tasks_list_position_created_idx" ON "tasks" USING btree ("list_id","position","created_at");

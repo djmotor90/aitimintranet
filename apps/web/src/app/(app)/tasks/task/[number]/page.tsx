@@ -1,4 +1,4 @@
-import { db, lists, spaces } from "@aitim/db";
+import { db, lists, spaces, users } from "@aitim/db";
 import { eq } from "drizzle-orm";
 import { FileText } from "lucide-react";
 import Link from "next/link";
@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { getSpaceRole, requireUser } from "@/lib/rbac";
+import { getListRole, requireUser } from "@/lib/rbac";
 import { archiveTask, updateTaskCore } from "@/modules/tasks/actions";
 import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
 import { AssigneeSelect } from "@/modules/tasks/components/assignee-select";
@@ -97,7 +97,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   if (!row) notFound();
   const { list, space } = row;
 
-  const role = await getSpaceRole(user.id, space.id, user.platformRole);
+  const role = await getListRole(user.id, list.id, user.platformRole);
   if (!role) notFound();
   const canEdit = role === "owner" || role === "member";
 
@@ -111,8 +111,11 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
       getTaskAttachments(task.id),
     ]);
   const { taskAssignees: ta } = await import("@aitim/db");
-  const assigneeRows = await db.select().from(ta).where(eq(ta.taskId, task.id));
-  const assigneeIds = new Set(assigneeRows.map((r) => r.userId));
+  const assigneeRows = await db
+    .select({ id: users.id, displayName: users.displayName, photoKey: users.photoKey })
+    .from(ta)
+    .innerJoin(users, eq(ta.userId, users.id))
+    .where(eq(ta.taskId, task.id));
   const cf = (task.customFields ?? {}) as Record<string, unknown>;
   const description = (task.description as { text?: string } | null)?.text ?? "";
   const savedLayout = list.taskLayout as TaskLayout | null;
@@ -341,7 +344,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                       <AssigneeSelect
                         taskId={task.id}
                         users={activeUsers}
-                        selectedIds={[...assigneeIds]}
+                        selectedUsers={assigneeRows}
                         disabled={!canEdit}
                       />
                     </div>
