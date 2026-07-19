@@ -19,6 +19,8 @@ export interface ActivityEntry {
     | "task.due_date_changed"
     | "task.assignee_added"
     | "task.assignee_removed"
+    | "task.tag_added"
+    | "task.tag_removed"
     | "task.field_changed"
     | "task.archived"
     | "comment.created"

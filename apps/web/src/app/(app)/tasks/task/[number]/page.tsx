@@ -18,16 +18,20 @@ import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
 import { AssigneeSelect } from "@/modules/tasks/components/assignee-select";
 import { CommentBox } from "@/modules/tasks/components/comment-box";
 import { CustomFieldInput } from "@/modules/tasks/components/custom-field-input";
+import { TagPicker } from "@/modules/tasks/components/tag-picker";
 import { TaskDetailShell } from "@/modules/tasks/components/task-detail-shell";
 import { defaultLayout, type TaskLayout } from "@/modules/tasks/layout-types";
 import {
   getActiveUsers,
   getFieldDefinitions,
   getStatusesForList,
+  getTagsForSpace,
+  getTagsForTask,
   getTaskActivity,
   getTaskAttachments,
   getTaskByNumber,
   getTaskComments,
+  getUsersWithListAccess,
 } from "@/modules/tasks/queries";
 
 function formatBytes(bytes: number): string {
@@ -72,6 +76,10 @@ function describeActivity(a: {
       return `${who} added an assignee`;
     case "task.assignee_removed":
       return `${who} removed an assignee`;
+    case "task.tag_added":
+      return `${who} added tag ${p.name ?? "?"}`;
+    case "task.tag_removed":
+      return `${who} removed tag ${p.name ?? "?"}`;
     case "task.field_changed":
       return `${who} changed ${p.field}: ${JSON.stringify(p.from)} → ${JSON.stringify(p.to)}`;
     case "attachment.added":
@@ -101,15 +109,28 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   if (!role) notFound();
   const canEdit = role === "owner" || role === "member";
 
-  const [listStatuses, fieldDefs, activity, activeUsers, taskComments, taskAttachments] =
-    await Promise.all([
-      getStatusesForList(task.listId),
-      getFieldDefinitions(task.listId),
-      getTaskActivity(task.id),
-      getActiveUsers(),
-      getTaskComments(task.id),
-      getTaskAttachments(task.id),
-    ]);
+  const [
+    listStatuses,
+    fieldDefs,
+    activity,
+    activeUsers,
+    mentionableUsers,
+    taskComments,
+    taskAttachments,
+    spaceTags,
+    taskTags,
+  ] = await Promise.all([
+    getStatusesForList(task.listId),
+    getFieldDefinitions(task.listId),
+    getTaskActivity(task.id),
+    getActiveUsers(),
+    // @-mentions only list people who can access this task (list RBAC).
+    getUsersWithListAccess(task.listId),
+    getTaskComments(task.id),
+    getTaskAttachments(task.id),
+    getTagsForSpace(space.id),
+    getTagsForTask(task.id),
+  ]);
   const { taskAssignees: ta } = await import("@aitim/db");
   const assigneeRows = await db
     .select({ id: users.id, displayName: users.displayName, photoKey: users.photoKey })
@@ -204,7 +225,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
             )}
           </ul>
           <div className="rounded-xl border bg-card p-3">
-            <CommentBox taskId={task.id} users={activeUsers} />
+            <CommentBox taskId={task.id} users={mentionableUsers} />
           </div>
         </>
       }
@@ -234,6 +255,17 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
             disabled={!canEdit}
             className="text-lg font-semibold"
           />
+
+          {/* Tags sit under the title like ClickUp (also available as a layout field). */}
+          <div className="flex flex-col gap-1.5">
+            <Label>Tags</Label>
+            <TagPicker
+              taskId={task.id}
+              spaceTags={spaceTags}
+              selectedTags={taskTags}
+              disabled={!canEdit}
+            />
+          </div>
 
           {/* layout-driven field groups */}
           {layout.groups.map((group) => {
@@ -345,6 +377,17 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                         taskId={task.id}
                         users={activeUsers}
                         selectedUsers={assigneeRows}
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  );
+                  if (fieldId === "tags") return (
+                    <div key="tags" className="flex flex-col gap-1.5 sm:col-span-2">
+                      <Label>Tags</Label>
+                      <TagPicker
+                        taskId={task.id}
+                        spaceTags={spaceTags}
+                        selectedTags={taskTags}
                         disabled={!canEdit}
                       />
                     </div>

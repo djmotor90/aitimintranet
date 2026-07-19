@@ -14,6 +14,7 @@ import {
   Bell,
   Building2,
   ChevronDown,
+  ChevronRight,
   Home,
   type LucideIcon,
   Shield,
@@ -22,14 +23,43 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { forwardRef, useMemo, useState, useTransition } from "react";
+import { forwardRef, useEffect, useMemo, useState, useTransition } from "react";
 import { moveFolder, moveList } from "@/modules/tasks/actions";
 import { SpaceNavContextMenu, TasksRootContextMenu } from "@/modules/tasks/components/nav-context-menus";
-import { FolderRow, ListRow } from "@/modules/tasks/components/sidebar-tree-nodes";
+import {
+  FolderRow,
+  ListRow,
+  folderContainsPath,
+} from "@/modules/tasks/components/sidebar-tree-nodes";
+import {
+  folderCollapseKey,
+  spaceCollapseKey,
+  useNavCollapse,
+} from "@/modules/tasks/components/use-nav-collapse";
 import type { FolderNavNode, ListNavNode } from "@/modules/tasks/queries";
 import type { NavIcon, NavItem } from "@/modules/types";
 import { cn } from "@/lib/utils";
 import { NotificationBadge } from "./notification-badge";
+
+/** Collect collapse keys for every space/folder that contains the current path. */
+function ancestorKeysForPath(taskNavTree: TaskNavTreeItem[], pathname: string): string[] {
+  const keys: string[] = [];
+  for (const space of taskNavTree) {
+    const spaceHref = `/tasks/${space.slug}`;
+    const underSpace = pathname === spaceHref || pathname.startsWith(`${spaceHref}/`);
+    if (!underSpace) continue;
+    keys.push(spaceCollapseKey(space.id));
+
+    function walk(node: FolderNavNode) {
+      if (folderContainsPath(node, space.slug, pathname)) {
+        keys.push(folderCollapseKey(node.id));
+        for (const sub of node.subfolders) walk(sub);
+      }
+    }
+    for (const f of space.folders) walk(f);
+  }
+  return keys;
+}
 
 const ICONS: Record<NavIcon, LucideIcon> = {
   users: Users,
@@ -71,7 +101,7 @@ const SpaceDropRow = forwardRef<HTMLElement, SpaceDropRowProps>(function SpaceDr
   const inner = (
     <span
       className={cn(
-        "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+        "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 text-sm transition-colors",
         isOver && "bg-muted ring-2 ring-primary/30",
         active
           ? "bg-muted font-medium text-foreground"
@@ -86,11 +116,11 @@ const SpaceDropRow = forwardRef<HTMLElement, SpaceDropRowProps>(function SpaceDr
     </span>
   );
   return space.hasSpaceAccess ? (
-    <Link ref={setRefs} href={spaceHref} {...rest}>
+    <Link ref={setRefs} href={spaceHref} className="min-w-0 flex-1" {...rest}>
       {inner}
     </Link>
   ) : (
-    <div ref={setRefs} {...rest}>
+    <div ref={setRefs} className="min-w-0 flex-1" {...rest}>
       {inner}
     </div>
   );
@@ -137,6 +167,16 @@ export function SidebarNav({
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const folderIndex = useMemo(() => buildFolderIndex(taskNavTree), [taskNavTree]);
+  const { isExpanded, toggle, expand } = useNavCollapse();
+
+  // When navigating to a list, open its parent space/folders so the active item is visible.
+  // Depend only on pathname so a tree data refresh does not undo a manual collapse.
+  useEffect(() => {
+    for (const key of ancestorKeysForPath(taskNavTree, pathname)) {
+      expand(key);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only react to navigation
+  }, [pathname]);
 
   function findLabel(id: string): string | null {
     const [, type, entityId] = id.split(":");
@@ -227,18 +267,53 @@ export function SidebarNav({
               )}
 
               {showTaskTree && (
-                <div className="mt-1 ml-5 flex flex-col gap-1 border-l border-border pl-2">
+                <div className="mt-1 ml-5 flex flex-col gap-0.5 border-l border-border pl-2">
                   {taskNavTree.map((space) => {
                     const spaceHref = `/tasks/${space.slug}`;
-                    const spaceActive = pathname === spaceHref || pathname.startsWith(`${spaceHref}/`);
-                    return (
-                      <div key={space.id} className="flex flex-col gap-1">
-                        <SpaceNavContextMenu spaceId={space.id} isOwner={space.isOwner}>
-                          <SpaceDropRow space={space} spaceHref={spaceHref} active={spaceActive} />
-                        </SpaceNavContextMenu>
+                    const spaceActive =
+                      pathname === spaceHref || pathname.startsWith(`${spaceHref}/`);
+                    const hasChildren = space.folders.length > 0 || space.lists.length > 0;
+                    const spaceExpanded = hasChildren && isExpanded(spaceCollapseKey(space.id));
 
-                        {(space.folders.length > 0 || space.lists.length > 0) && (
-                          <div className="ml-3 flex flex-col gap-1 border-l border-border pl-2">
+                    return (
+                      <div key={space.id} className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-0.5">
+                          {hasChildren ? (
+                            <button
+                              type="button"
+                              aria-label={
+                                spaceExpanded
+                                  ? `Collapse ${space.name}`
+                                  : `Expand ${space.name}`
+                              }
+                              aria-expanded={spaceExpanded}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                toggle(spaceCollapseKey(space.id));
+                              }}
+                              className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                            >
+                              {spaceExpanded ? (
+                                <ChevronDown className="size-3.5" />
+                              ) : (
+                                <ChevronRight className="size-3.5" />
+                              )}
+                            </button>
+                          ) : (
+                            <span className="size-5 shrink-0" aria-hidden />
+                          )}
+                          <SpaceNavContextMenu spaceId={space.id} isOwner={space.isOwner}>
+                            <SpaceDropRow
+                              space={space}
+                              spaceHref={spaceHref}
+                              active={spaceActive}
+                            />
+                          </SpaceNavContextMenu>
+                        </div>
+
+                        {spaceExpanded && hasChildren && (
+                          <div className="ml-3 flex flex-col gap-0.5 border-l border-border pl-1.5">
                             {space.folders.map((f) => (
                               <FolderRow
                                 key={f.id}
@@ -246,6 +321,10 @@ export function SidebarNav({
                                 spaceId={space.id}
                                 spaceSlug={space.slug}
                                 canManage={space.isOwner}
+                                isExpanded={isExpanded(folderCollapseKey(f.id))}
+                                onToggle={() => toggle(folderCollapseKey(f.id))}
+                                isFolderExpanded={(id) => isExpanded(folderCollapseKey(id))}
+                                onToggleFolder={(id) => toggle(folderCollapseKey(id))}
                               />
                             ))}
                             {space.lists.map((list) => (

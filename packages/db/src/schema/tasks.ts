@@ -199,6 +199,32 @@ export const listMembers = pgTable(
   ],
 );
 
+/**
+ * Named views on a list (ClickUp-style): each has its own type (table/board),
+ * filters, group-by, closed-task visibility, and optional column order.
+ */
+export const listViews = pgTable(
+  "list_views",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listId: uuid("list_id")
+      .notNull()
+      .references(() => lists.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** "table" | "board" */
+    type: text("type").notNull().default("table"),
+    /** FilterCondition[] stored as JSON */
+    filters: jsonb("filters").notNull().default(sql`'[]'::jsonb`),
+    groupBy: text("group_by"),
+    showClosed: boolean("show_closed").notNull().default(false),
+    tableColumnOrder: jsonb("table_column_order"),
+    position: text("position").notNull().default("a0"),
+    createdBy: uuid("created_by").references(() => users.id),
+    ...timestamps,
+  },
+  (t) => [index("list_views_list_idx").on(t.listId)],
+);
+
 export const statuses = pgTable(
   "statuses",
   {
@@ -265,6 +291,47 @@ export const taskAssignees = pgTable(
     assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.taskId, t.userId] }), index("task_assignees_user_idx").on(t.userId)],
+);
+
+/**
+ * Space-scoped tags (ClickUp-style): reusable colored labels shared across all
+ * lists in a space. Tasks attach tags via `task_tags`.
+ */
+export const tags = pgTable(
+  "tags",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    color: text("color").notNull().default("#64748b"),
+    createdBy: uuid("created_by").references(() => users.id),
+    ...timestamps,
+  },
+  (t) => [
+    // Case-insensitive uniqueness per space so "Bug" and "bug" cannot both exist.
+    uniqueIndex("tags_space_name_idx").on(t.spaceId, sql`lower(${t.name})`),
+    index("tags_space_idx").on(t.spaceId),
+  ],
+);
+
+export const taskTags = pgTable(
+  "task_tags",
+  {
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    tagId: uuid("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+    addedBy: uuid("added_by").references(() => users.id),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.taskId, t.tagId] }),
+    index("task_tags_tag_idx").on(t.tagId),
+  ],
 );
 
 export const customFieldDefinitions = pgTable(
@@ -391,8 +458,19 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   status: one(statuses, { fields: [tasks.statusId], references: [statuses.id] }),
   creator: one(users, { fields: [tasks.createdBy], references: [users.id] }),
   assignees: many(taskAssignees),
+  tags: many(taskTags),
   comments: many(comments),
   attachments: many(attachments),
+}));
+
+export const tagsRelations = relations(tags, ({ one, many }) => ({
+  space: one(spaces, { fields: [tags.spaceId], references: [spaces.id] }),
+  tasks: many(taskTags),
+}));
+
+export const taskTagsRelations = relations(taskTags, ({ one }) => ({
+  task: one(tasks, { fields: [taskTags.taskId], references: [tasks.id] }),
+  tag: one(tags, { fields: [taskTags.tagId], references: [tags.id] }),
 }));
 
 export const taskAssigneesRelations = relations(taskAssignees, ({ one }) => ({

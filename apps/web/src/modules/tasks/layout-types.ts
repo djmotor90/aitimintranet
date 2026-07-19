@@ -2,7 +2,7 @@
  * Task detail layout configuration stored as JSONB on the lists table.
  * Groups contain ordered field IDs. Fields not in any group are hidden.
  *
- * Core field IDs: "status" | "priority" | "due_date" | "start_date" | "assignees" | "description"
+ * Core field IDs: "status" | "priority" | "due_date" | "start_date" | "assignees" | "tags" | "description"
  *   Read-only auto-managed: "created_at" | "closed_at"
  * Custom field IDs: `cf_${definition.id}`
  */
@@ -38,12 +38,14 @@ export const CORE_FIELDS: CoreField[] = [
   { id: "due_date",    label: "Due date" },
   { id: "start_date",  label: "Start date" },
   { id: "assignees",   label: "Assignees" },
+  { id: "tags",        label: "Tags" },
   { id: "description", label: "Description" },
   { id: "created_at",  label: "Created date", readonly: true },
   { id: "closed_at",   label: "Closed date",  readonly: true },
 ];
 
-/** IDs of core fields shown in the default layout (excludes readonly/auto-managed fields). */
+/** IDs of core fields shown in the default layout (excludes readonly/auto-managed fields).
+ *  Tags are rendered under the title (ClickUp-style) and can also be placed via the layout builder. */
 const DEFAULT_FIELD_IDS = ["status", "priority", "due_date", "start_date", "assignees", "description"];
 
 /** Build the default layout used when none has been configured yet. */

@@ -7,17 +7,20 @@ import {
   folders,
   listMembers,
   lists,
+  listViews,
   modules,
   spaceMembers,
   spaces,
   spaceTaskCounters,
   statuses,
+  tags,
   taskAssignees,
   tasks,
+  taskTags,
   users,
 } from "@aitim/db";
 import { valueSchemaFor, type CustomFieldDefinitionLike, type CustomFieldType } from "@aitim/shared";
-import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -1012,6 +1015,29 @@ export async function updateTaskStatus(taskId: string, statusId: string) {
   revalidatePath(`/tasks/task/${task.number}`);
 }
 
+/** Single-field update for the table's inline title cell. */
+export async function updateTaskTitle(taskId: string, title: string) {
+  const parsed = z.string().min(1).max(300).parse(title.trim());
+  const { task, list, space } = await requireTask(taskId);
+  const user = await requireUser();
+  await assertListRole(list.id, "member");
+  if (task.title === parsed) return;
+
+  await db.transaction(async (tx) => {
+    await tx.update(tasks).set({ title: parsed }).where(eq(tasks.id, taskId));
+    await logActivity(tx, {
+      spaceId: space.id,
+      taskId,
+      actorId: user.id,
+      verb: "task.title_changed",
+      payload: { from: task.title, to: parsed },
+    });
+  });
+  await pingListUpdate(task.listId);
+  revalidatePath(listPath(space.slug, list.slug));
+  revalidatePath(`/tasks/task/${task.number}`);
+}
+
 /** Single-field update for the table's inline priority cell. */
 export async function updateTaskPriority(
   taskId: string,
@@ -1270,6 +1296,139 @@ export async function toggleAssignee(formData: FormData) {
   revalidatePath(`/tasks/task/${task.number}`);
 }
 
+// ---------------------------------------------------------------- tags (ClickUp-style, space-scoped)
+
+/** Private palette for auto-coloring new tags (not exported — "use server" forbids non-async exports). */
+const TAG_COLORS = [
+  "#ef4444",
+  "#f97316",
+  "#eab308",
+  "#22c55e",
+  "#14b8a6",
+  "#0ea5e9",
+  "#3b82f6",
+  "#8b5cf6",
+  "#ec4899",
+  "#64748b",
+] as const;
+
+function pickTagColor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return TAG_COLORS[h % TAG_COLORS.length];
+}
+
+/** Add or remove an existing space tag on a task. */
+export async function toggleTaskTag(taskId: string, tagId: string) {
+  "use server";
+  const { task, list, space } = await requireTask(taskId);
+  const user = await requireUser();
+  await assertListRole(list.id, "member");
+
+  const [tag] = await db
+    .select()
+    .from(tags)
+    .where(and(eq(tags.id, tagId), eq(tags.spaceId, space.id)));
+  if (!tag) throw new Error("Tag not found in this space");
+
+  const existing = await db
+    .select()
+    .from(taskTags)
+    .where(and(eq(taskTags.taskId, taskId), eq(taskTags.tagId, tagId)));
+
+  await db.transaction(async (tx) => {
+    if (existing.length > 0) {
+      await tx
+        .delete(taskTags)
+        .where(and(eq(taskTags.taskId, taskId), eq(taskTags.tagId, tagId)));
+      await logActivity(tx, {
+        spaceId: space.id,
+        taskId,
+        actorId: user.id,
+        verb: "task.tag_removed",
+        payload: { tagId, name: tag.name },
+      });
+    } else {
+      await tx.insert(taskTags).values({ taskId, tagId, addedBy: user.id });
+      await logActivity(tx, {
+        spaceId: space.id,
+        taskId,
+        actorId: user.id,
+        verb: "task.tag_added",
+        payload: { tagId, name: tag.name },
+      });
+    }
+  });
+
+  await pingListUpdate(task.listId);
+  revalidatePath(listPath(space.slug, list.slug));
+  revalidatePath(`/tasks/task/${task.number}`);
+}
+
+/**
+ * Create a new space tag (or reuse an existing one with the same name,
+ * case-insensitive) and attach it to the task — same flow as ClickUp's
+ * "type a name → Create" action in the tag picker.
+ */
+export async function createAndAddTag(
+  taskId: string,
+  name: string,
+  color?: string,
+): Promise<{ id: string; name: string; color: string }> {
+  "use server";
+  const { task, list, space } = await requireTask(taskId);
+  const user = await requireUser();
+  await assertListRole(list.id, "member");
+
+  const trimmed = z.string().min(1).max(40).parse(name.trim());
+  const colorValue = color
+    ? z.string().regex(/^#[0-9a-fA-F]{6}$/).parse(color)
+    : pickTagColor(trimmed.toLowerCase());
+
+  // Reuse existing tag if the name already exists in this space (any casing).
+  const [existingTag] = await db
+    .select()
+    .from(tags)
+    .where(and(eq(tags.spaceId, space.id), sql`lower(${tags.name}) = lower(${trimmed})`));
+
+  let tag = existingTag;
+  if (!tag) {
+    const [created] = await db
+      .insert(tags)
+      .values({
+        spaceId: space.id,
+        name: trimmed,
+        color: colorValue,
+        createdBy: user.id,
+      })
+      .returning();
+    tag = created;
+  }
+
+  const alreadyOnTask = await db
+    .select()
+    .from(taskTags)
+    .where(and(eq(taskTags.taskId, taskId), eq(taskTags.tagId, tag.id)));
+
+  if (alreadyOnTask.length === 0) {
+    await db.transaction(async (tx) => {
+      await tx.insert(taskTags).values({ taskId, tagId: tag.id, addedBy: user.id });
+      await logActivity(tx, {
+        spaceId: space.id,
+        taskId,
+        actorId: user.id,
+        verb: "task.tag_added",
+        payload: { tagId: tag.id, name: tag.name, created: !existingTag },
+      });
+    });
+  }
+
+  await pingListUpdate(task.listId);
+  revalidatePath(listPath(space.slug, list.slug));
+  revalidatePath(`/tasks/task/${task.number}`);
+  return { id: tag.id, name: tag.name, color: tag.color };
+}
+
 export async function archiveTask(formData: FormData) {
   const taskId = z.string().uuid().parse(formData.get("taskId"));
   const { task, list, space } = await requireTask(taskId);
@@ -1294,11 +1453,17 @@ export async function archiveTask(formData: FormData) {
 export async function addComment(formData: FormData) {
   const taskId = z.string().uuid().parse(formData.get("taskId"));
   const body = z.string().min(1).max(10_000).parse(formData.get("body"));
-  const mentionIds = formData.getAll("mentions").map((v) => z.string().uuid().parse(v));
+  const rawMentionIds = formData.getAll("mentions").map((v) => z.string().uuid().parse(v));
 
   const { task, list, space } = await requireTask(taskId);
   const user = await requireUser();
   await assertListRole(list.id, "guest"); // guests may comment
+
+  // Only allow mentions of people who can actually see this task.
+  const { getUsersWithListAccess } = await import("./queries");
+  const allowed = await getUsersWithListAccess(list.id);
+  const allowedIds = new Set(allowed.map((u) => u.id));
+  const mentionIds = [...new Set(rawMentionIds)].filter((id) => allowedIds.has(id));
 
   const { comments, commentMentions } = await import("@aitim/db");
 
@@ -1370,6 +1535,8 @@ export async function fetchTasksPage(params: {
   sort?: { fieldId: string; dir: "asc" | "desc" } | null;
   offset: number;
   limit?: number;
+  /** Include done/cancelled status tasks (default false). */
+  showClosed?: boolean;
 }) {
   "use server";
   const listId = z.string().uuid().parse(params.listId);
@@ -1381,12 +1548,27 @@ export async function fetchTasksPage(params: {
     ? { fieldId: z.string().uuid().parse(params.sort.fieldId), dir: z.enum(["asc", "desc"]).parse(params.sort.dir) }
     : null;
   const groupBy = params.groupBy ? z.string().max(60).parse(params.groupBy) : undefined;
+  const showClosed = params.showClosed === true;
 
   const { getTasksPage } = await import("./queries");
-  return getTasksPage({ listId, conditions, groupBy, sort, limit, offset, countsAlreadyKnown: true });
+  return getTasksPage({
+    listId,
+    conditions,
+    groupBy,
+    sort,
+    limit,
+    offset,
+    showClosed,
+    countsAlreadyKnown: true,
+  });
 }
 
-export async function saveTableColumnOrder(listId: string, order: string[]) {
+export async function saveTableColumnOrder(
+  listId: string,
+  order: string[],
+  /** When set, column order is stored on this named view. */
+  viewId?: string,
+) {
   "use server";
   await requireUser();
   const { list } = await requireList(listId);
@@ -1396,17 +1578,36 @@ export async function saveTableColumnOrder(listId: string, order: string[]) {
   const role = await getListRole(user.user.id, list.id, (user.user as { platformRole?: string }).platformRole ?? "member");
   if (!role) return;
 
+  if (viewId) {
+    const id = z.string().uuid().parse(viewId);
+    await db
+      .update(listViews)
+      .set({ tableColumnOrder: order })
+      .where(and(eq(listViews.id, id), eq(listViews.listId, list.id)));
+    return;
+  }
+
   await db.update(lists).set({ tableColumnOrder: order }).where(eq(lists.id, list.id));
   // No revalidatePath needed — client reads this on next load via prop
 }
 
-/** Persist the active view (table|board) and/or groupBy for a list. Any list member can call this. */
+/**
+ * Persist prefs for the active named view (preferred) or fall back to legacy
+ * list-level defaultView/defaultGroupBy when no viewId is provided.
+ */
 export async function saveListViewPrefs(
   listId: string,
-  prefs: { view?: string; groupBy?: string },
+  prefs: {
+    view?: string;
+    groupBy?: string;
+    filters?: unknown;
+    showClosed?: boolean;
+    /** When set, writes into this named list_view instead of the list row. */
+    viewId?: string;
+  },
 ) {
   "use server";
-  const { list } = await requireList(listId);
+  const { list, space } = await requireList(listId);
   const session = await (await import("@/lib/auth")).auth();
   if (!session?.user?.id) return;
   const role = await getListRole(
@@ -1416,12 +1617,208 @@ export async function saveListViewPrefs(
   );
   if (!role) return;
 
+  if (prefs.viewId) {
+    const viewId = z.string().uuid().parse(prefs.viewId);
+    const [row] = await db
+      .select()
+      .from(listViews)
+      .where(and(eq(listViews.id, viewId), eq(listViews.listId, listId)));
+    if (!row) return;
+
+    const updates: Partial<typeof listViews.$inferInsert> = {};
+    if ("view" in prefs && prefs.view) updates.type = prefs.view === "board" ? "board" : "table";
+    if ("groupBy" in prefs) updates.groupBy = prefs.groupBy || null;
+    if ("filters" in prefs) updates.filters = prefs.filters ?? [];
+    if ("showClosed" in prefs) updates.showClosed = prefs.showClosed === true;
+    if (Object.keys(updates).length === 0) return;
+
+    await db.update(listViews).set(updates).where(eq(listViews.id, viewId));
+    revalidatePath(listPath(space.slug, list.slug));
+    return;
+  }
+
+  // Legacy list-level defaults (still used when no named view is active).
   const updates: Record<string, string | null> = {};
   if ("view" in prefs) updates.defaultView = prefs.view ?? null;
   if ("groupBy" in prefs) updates.defaultGroupBy = prefs.groupBy || null;
   if (Object.keys(updates).length === 0) return;
 
   await db.update(lists).set(updates).where(eq(lists.id, list.id));
+}
+
+// ---------------------------------------------------------------- named list views (ClickUp-style)
+
+async function requireListView(viewId: string) {
+  const [row] = await db
+    .select({ view: listViews, list: lists, space: spaces })
+    .from(listViews)
+    .innerJoin(lists, eq(listViews.listId, lists.id))
+    .innerJoin(spaces, eq(lists.spaceId, spaces.id))
+    .where(eq(listViews.id, viewId));
+  if (!row) throw new Error("View not found");
+  return row;
+}
+
+function nextViewPosition(existing: { position: string }[]): string {
+  // Simple suffix: a0, a1, … a9, b0 — enough for dozens of views.
+  const n = existing.length;
+  const letter = String.fromCharCode(97 + Math.floor(n / 10));
+  return `${letter}${n % 10}`;
+}
+
+/** Create a named view on a list. Optionally clone settings from another view. */
+export async function createListView(params: {
+  listId: string;
+  name?: string;
+  type?: "table" | "board";
+  copyFromViewId?: string;
+}): Promise<{ id: string }> {
+  "use server";
+  const listId = z.string().uuid().parse(params.listId);
+  const type = params.type === "board" ? "board" : "table";
+  const user = await requireUser();
+  await assertListRole(listId, "member");
+  const { list, space } = await requireList(listId);
+
+  const existing = await db
+    .select()
+    .from(listViews)
+    .where(eq(listViews.listId, listId))
+    .orderBy(asc(listViews.position));
+
+  let filters: unknown = [];
+  let groupBy: string | null = null;
+  let showClosed = false;
+  let tableColumnOrder: unknown = null;
+
+  if (params.copyFromViewId) {
+    const srcId = z.string().uuid().parse(params.copyFromViewId);
+    const [src] = await db
+      .select()
+      .from(listViews)
+      .where(and(eq(listViews.id, srcId), eq(listViews.listId, listId)));
+    if (src) {
+      filters = src.filters;
+      groupBy = src.groupBy;
+      showClosed = src.showClosed;
+      tableColumnOrder = src.tableColumnOrder;
+    }
+  }
+
+  const baseName = (params.name?.trim() || (type === "board" ? "Board" : "List")).slice(0, 60);
+  // Unique-ish name: "List", "List 2", "List 3"…
+  let name = baseName;
+  let i = 2;
+  const names = new Set(existing.map((v) => v.name.toLowerCase()));
+  while (names.has(name.toLowerCase())) {
+    name = `${baseName} ${i++}`;
+  }
+
+  const [created] = await db
+    .insert(listViews)
+    .values({
+      listId,
+      name,
+      type,
+      filters,
+      groupBy,
+      showClosed,
+      tableColumnOrder,
+      position: nextViewPosition(existing),
+      createdBy: user.id,
+    })
+    .returning({ id: listViews.id });
+
+  revalidatePath(listPath(space.slug, list.slug));
+  return { id: created.id };
+}
+
+/** Rename a named view (ClickUp double-click / edit). */
+export async function renameListView(viewId: string, name: string) {
+  "use server";
+  const parsed = z.string().min(1).max(60).parse(name.trim());
+  const { view, list, space } = await requireListView(viewId);
+  await assertListRole(list.id, "member");
+
+  await db.update(listViews).set({ name: parsed }).where(eq(listViews.id, view.id));
+  revalidatePath(listPath(space.slug, list.slug));
+}
+
+/** Delete a named view. Refuses to delete the last remaining view on the list. */
+export async function deleteListView(viewId: string) {
+  "use server";
+  const { view, list, space } = await requireListView(viewId);
+  await assertListRole(list.id, "member");
+
+  const siblings = await db
+    .select({ id: listViews.id })
+    .from(listViews)
+    .where(eq(listViews.listId, list.id));
+  if (siblings.length <= 1) throw new Error("Cannot delete the last view");
+
+  await db.delete(listViews).where(eq(listViews.id, view.id));
+  revalidatePath(listPath(space.slug, list.slug));
+}
+
+/**
+ * Persist a new tab order after drag-and-drop. `orderedIds` is the full set of
+ * view ids for the list in left-to-right order.
+ */
+export async function reorderListViews(listId: string, orderedIds: string[]) {
+  "use server";
+  const listUuid = z.string().uuid().parse(listId);
+  const ids = z.array(z.string().uuid()).min(1).max(100).parse(orderedIds);
+  const { list, space } = await requireList(listUuid);
+  await assertListRole(list.id, "member");
+
+  const existing = await db
+    .select({ id: listViews.id })
+    .from(listViews)
+    .where(eq(listViews.listId, list.id));
+  const existingIds = new Set(existing.map((r) => r.id));
+  if (ids.length !== existingIds.size || ids.some((id) => !existingIds.has(id))) {
+    throw new Error("Invalid view order");
+  }
+
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < ids.length; i++) {
+      await tx
+        .update(listViews)
+        .set({ position: `a${i}` })
+        .where(and(eq(listViews.id, ids[i]), eq(listViews.listId, list.id)));
+    }
+  });
+  revalidatePath(listPath(space.slug, list.slug));
+}
+
+/** Persist the full config of a named view (filters, groupBy, closed, type, columns). */
+export async function updateListViewConfig(
+  viewId: string,
+  config: {
+    filters?: unknown;
+    groupBy?: string | null;
+    showClosed?: boolean;
+    type?: "table" | "board";
+    tableColumnOrder?: unknown;
+  },
+) {
+  "use server";
+  const { view, list, space } = await requireListView(viewId);
+  await assertListRole(list.id, "guest"); // guests can browse but not mutate — use member
+  const user = await requireUser();
+  const role = await getListRole(user.id, list.id, user.platformRole);
+  if (!role || role === "guest") return;
+
+  const updates: Partial<typeof listViews.$inferInsert> = {};
+  if ("filters" in config) updates.filters = config.filters ?? [];
+  if ("groupBy" in config) updates.groupBy = config.groupBy || null;
+  if ("showClosed" in config) updates.showClosed = config.showClosed === true;
+  if ("type" in config && config.type) updates.type = config.type === "board" ? "board" : "table";
+  if ("tableColumnOrder" in config) updates.tableColumnOrder = config.tableColumnOrder ?? null;
+  if (Object.keys(updates).length === 0) return;
+
+  await db.update(listViews).set(updates).where(eq(listViews.id, view.id));
+  revalidatePath(listPath(space.slug, list.slug));
 }
 
 export async function saveTaskLayout(

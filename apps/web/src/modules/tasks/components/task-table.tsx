@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Columns3 } from "lucide-react";
+import { ChevronRight, Columns3, Pencil } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type DragEvent,
+  memo,
   type PointerEvent,
   useCallback,
   useEffect,
@@ -43,7 +44,10 @@ import {
   PrioritySelectCell,
   StatusSelectCell,
   TaskDateCell,
+  TitleEditCell,
 } from "./editable-cells";
+import { PRIORITY_STYLES } from "./task-card";
+import { TagChips, TagPicker, type TagOption } from "./tag-picker";
 
 interface StatusLike { id: string; name: string; color: string }
 interface FieldDefLike { id: string; key: string; label: string; type: string; options: unknown }
@@ -68,6 +72,7 @@ const BASE_COLUMNS = [
   { id: "title",      label: "Title",        width: 360, minWidth: 220 },
   { id: "status",     label: "Status",       width: 150, minWidth: 120 },
   { id: "priority",   label: "Priority",     width: 130, minWidth: 110 },
+  { id: "tags",       label: "Tags",         width: 180, minWidth: 140 },
   { id: "due",        label: "Due date",     width: 140, minWidth: 120 },
   { id: "start_date", label: "Start date",   width: 140, minWidth: 120 },
   { id: "assignees",  label: "Assignees",    width: 150, minWidth: 120 },
@@ -189,6 +194,370 @@ function FieldContextMenu({
   );
 }
 
+// ─── virtualized row (memoized, display-first) ────────────────────────────────
+// Airtable / native-list model:
+//  • Rows always paint cheap, stable display cells (same look while scrolling).
+//  • Interactive editors (Radix menus, pickers) mount ONLY for the one cell the
+//    user clicks — never for every visible row on every fling.
+//  • No scroll-mode swap → no blink, no mass remount freeze on settle.
+// React.memo skips re-renders when props are stable (pure scroll of already-
+// mounted rows).
+
+const CELL_BTN =
+  "block h-7 w-full truncate rounded-md px-1.5 text-left text-sm hover:bg-muted";
+
+function fmtShortDate(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
+}
+
+interface TaskRowProps {
+  vIndex: number;
+  item: TaskWithMeta;
+  orderedColumns: ColumnDef[];
+  canEdit: boolean;
+  statuses: StatusLike[];
+  statusById: Map<string, StatusLike>;
+  fieldDefs: FieldDefLike[];
+  userNames: Map<string, string>;
+  activeUsers: { id: string; displayName: string; photoKey: string | null }[];
+  spaceTags: TagOption[];
+  onPatchTask: (taskId: string, patch: Partial<TaskWithMeta["task"]>) => void;
+  onPatchCustomField: (taskId: string, defId: string, value: unknown) => void;
+}
+
+const TaskRow = memo(function TaskRow({
+  vIndex,
+  item,
+  orderedColumns,
+  canEdit,
+  statuses,
+  statusById,
+  fieldDefs,
+  userNames,
+  activeUsers,
+  spaceTags,
+  onPatchTask,
+  onPatchCustomField,
+}: TaskRowProps) {
+  const task = item.task;
+  const assignees = item.assignees;
+  const taskTags = item.tags ?? [];
+  const cf = (task.customFields ?? {}) as Record<string, unknown>;
+  // Only one interactive editor per row at a time — keeps scroll paint cheap.
+  const [editingCol, setEditingCol] = useState<string | null>(null);
+
+  function openEdit(colId: string) {
+    if (!canEdit) return;
+    setEditingCol(colId);
+  }
+
+  function closeEdit() {
+    setEditingCol(null);
+  }
+
+  function renderCell(colId: string) {
+    const editing = canEdit && editingCol === colId;
+
+    switch (colId) {
+      case "number":
+        return (
+          <TableCell key={colId} className="text-xs text-muted-foreground">
+            {task.number}
+          </TableCell>
+        );
+
+      case "title":
+        // Title stays a real link; pencil mounts the light editor only when asked.
+        // Tag chips are display-only here — full tag edit lives in the Tags column.
+        return (
+          <TableCell key={colId} className="min-w-0">
+            {editing ? (
+              <TitleEditCell
+                taskId={task.id}
+                number={task.number}
+                title={task.title}
+                canEdit
+                startEditing
+                onSaved={(next) => {
+                  onPatchTask(task.id, { title: next });
+                  closeEdit();
+                }}
+              />
+            ) : (
+              <div className="group/title flex min-w-0 items-center gap-0.5">
+                <Link
+                  href={`/tasks/task/${task.number}`}
+                  className="min-w-0 truncate font-medium hover:underline"
+                >
+                  {task.title}
+                </Link>
+                {taskTags.length > 0 && (
+                  <span className="ml-1 hidden min-w-0 sm:inline">
+                    <TagChips tags={taskTags.slice(0, 2)} />
+                  </span>
+                )}
+                {canEdit && (
+                  <button
+                    type="button"
+                    title="Edit title"
+                    aria-label="Edit title"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openEdit("title");
+                    }}
+                    className={cn(
+                      "flex size-6 shrink-0 items-center justify-center rounded-md",
+                      "text-muted-foreground opacity-0 transition-opacity",
+                      "hover:bg-muted hover:text-foreground",
+                      "group-hover/title:opacity-100 focus-visible:opacity-100",
+                    )}
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+          </TableCell>
+        );
+
+      case "status": {
+        const st = statusById.get(task.statusId);
+        if (editing) {
+          return (
+            <TableCell key={colId} className="p-0.5">
+              <StatusSelectCell
+                taskId={task.id}
+                statusId={task.statusId}
+                statuses={statuses}
+                defaultOpen
+                onOpenChange={(open) => {
+                  if (!open) closeEdit();
+                }}
+                onSaved={(next) => {
+                  onPatchTask(task.id, { statusId: next });
+                  closeEdit();
+                }}
+              />
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            {canEdit ? (
+              <button
+                type="button"
+                onClick={() => openEdit("status")}
+                style={st ? { color: st.color } : undefined}
+                className={CELL_BTN}
+              >
+                {st?.name ?? "—"}
+              </button>
+            ) : (
+              <span className="block h-7 truncate px-1.5 text-sm" style={st ? { color: st.color } : undefined}>
+                {st?.name ?? "—"}
+              </span>
+            )}
+          </TableCell>
+        );
+      }
+
+      case "priority": {
+        if (editing) {
+          return (
+            <TableCell key={colId} className="p-0.5">
+              <PrioritySelectCell
+                taskId={task.id}
+                priority={task.priority}
+                defaultOpen
+                onOpenChange={(open) => {
+                  if (!open) closeEdit();
+                }}
+                onSaved={(next) => {
+                  onPatchTask(task.id, { priority: next });
+                  closeEdit();
+                }}
+              />
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            {canEdit ? (
+              <button
+                type="button"
+                onClick={() => openEdit("priority")}
+                className={cn(CELL_BTN, "capitalize", task.priority && PRIORITY_STYLES[task.priority])}
+              >
+                {task.priority ?? <span className="text-muted-foreground">—</span>}
+              </button>
+            ) : (
+              <span className={cn("block h-7 truncate px-1.5 text-sm capitalize", task.priority && PRIORITY_STYLES[task.priority])}>
+                {task.priority ?? "—"}
+              </span>
+            )}
+          </TableCell>
+        );
+      }
+
+      case "due":
+      case "start_date": {
+        const field = colId === "due" ? "dueDate" : "startDate";
+        const value = colId === "due" ? task.dueDate : task.startDate;
+        if (editing) {
+          return (
+            <TableCell key={colId} className="p-0.5">
+              <TaskDateCell
+                taskId={task.id}
+                field={field}
+                value={value}
+                startEditing
+                onCancel={closeEdit}
+                onSaved={(next) => {
+                  onPatchTask(task.id, { [field]: next });
+                  closeEdit();
+                }}
+              />
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            {canEdit ? (
+              <button type="button" onClick={() => openEdit(colId)} className={CELL_BTN}>
+                {fmtShortDate(value)}
+              </button>
+            ) : (
+              <span className="block h-7 truncate px-1.5 text-sm">{fmtShortDate(value)}</span>
+            )}
+          </TableCell>
+        );
+      }
+
+      case "created_at":
+        return (
+          <TableCell key={colId} className="text-sm">
+            {fmtShortDate(task.createdAt)}
+          </TableCell>
+        );
+
+      case "closed_at":
+        return (
+          <TableCell key={colId} className="text-sm">
+            {fmtShortDate(task.completedAt)}
+          </TableCell>
+        );
+
+      case "tags":
+        if (editing) {
+          return (
+            <TableCell key={colId} className="p-0.5" onClick={(e) => e.stopPropagation()}>
+              <TagPicker
+                taskId={task.id}
+                spaceTags={spaceTags}
+                selectedTags={taskTags}
+                compact
+              />
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            {canEdit ? (
+              <button
+                type="button"
+                onClick={() => openEdit("tags")}
+                className={cn(CELL_BTN, "flex items-center gap-1")}
+              >
+                {taskTags.length > 0 ? <TagChips tags={taskTags} /> : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </button>
+            ) : (
+              <div className="flex h-7 items-center px-1.5">
+                {taskTags.length > 0 ? <TagChips tags={taskTags} /> : "—"}
+              </div>
+            )}
+          </TableCell>
+        );
+
+      case "assignees":
+        if (editing) {
+          return (
+            <TableCell key={colId} className="p-0.5" onClick={(e) => e.stopPropagation()}>
+              <AssigneeSelect
+                taskId={task.id}
+                users={activeUsers}
+                selectedUsers={assignees}
+              />
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={colId} className="p-0.5">
+            {canEdit ? (
+              <button type="button" onClick={() => openEdit("assignees")} className={CELL_BTN}>
+                {assignees.map((a) => a.displayName).join(", ") || (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </button>
+            ) : (
+              <span className="block h-7 truncate px-1.5 text-sm">
+                {assignees.map((a) => a.displayName).join(", ") || "—"}
+              </span>
+            )}
+          </TableCell>
+        );
+
+      default:
+        if (colId.startsWith("field-")) {
+          const defId = colId.slice(6);
+          const def = fieldDefs.find((d) => d.id === defId);
+          if (!def) return null;
+          if (editing) {
+            return (
+              <TableCell key={colId} className="p-0.5">
+                <CustomFieldEditCell
+                  taskId={task.id}
+                  def={def}
+                  value={cf[defId]}
+                  users={activeUsers}
+                  onSaved={(next) => {
+                    onPatchCustomField(task.id, defId, next);
+                    // Keep open for multi-step fields; click outside handled by row reuse.
+                  }}
+                />
+              </TableCell>
+            );
+          }
+          return (
+            <TableCell key={colId} className="p-0.5">
+              {canEdit ? (
+                <button type="button" onClick={() => openEdit(colId)} className={CELL_BTN}>
+                  {renderFieldValue(def, cf[defId], userNames)}
+                </button>
+              ) : (
+                <span className="block h-7 truncate px-1.5 text-sm">
+                  {renderFieldValue(def, cf[defId], userNames)}
+                </span>
+              )}
+            </TableCell>
+          );
+        }
+        return null;
+    }
+  }
+
+  return (
+    <TableRow data-index={vIndex} className="h-[37px]">
+      {orderedColumns.map((col) => renderCell(col.id))}
+    </TableRow>
+  );
+});
+
 // ─── main component ───────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 200;
@@ -206,6 +575,9 @@ export function TaskTable({
   listId,
   initialColumnOrder,
   canEdit = true,
+  showClosed = false,
+  spaceTags = [],
+  viewId,
 }: {
   /** First page of tasks (server-filtered and ordered). */
   items: TaskWithMeta[];
@@ -224,8 +596,14 @@ export function TaskTable({
   initialColumnOrder?: string[];
   /** When false, cells are read-only (guests / view-only grants). */
   canEdit?: boolean;
+  /** Include done/cancelled tasks on follow-up page fetches (matches server page). */
+  showClosed?: boolean;
+  /** All tags defined in the parent space (for the tags column picker). */
+  spaceTags?: TagOption[];
+  /** Active named list view id — column order / groupBy persist onto it. */
+  viewId?: string;
 }) {
-  const statusById = new Map(statuses.map((s) => [s.id, s]));
+  const statusById = useMemo(() => new Map(statuses.map((s) => [s.id, s])), [statuses]);
   const router = useRouter();
   const [, startTransition] = useTransition();
 
@@ -242,25 +620,31 @@ export function TaskTable({
     requestedPages.current = new Set([0]);
   }, [items]);
 
-  function patchRows(fn: (it: TaskWithMeta) => TaskWithMeta) {
+  const patchRows = useCallback((fn: (it: TaskWithMeta) => TaskWithMeta) => {
     setRowsByOffset((prev) => {
       const next = new Map<number, TaskWithMeta>();
       for (const [offset, it] of prev) next.set(offset, fn(it));
       return next;
     });
-  }
-  function patchTask(taskId: string, patch: Partial<TaskWithMeta["task"]>) {
-    patchRows((it) => (it.task.id === taskId ? { ...it, task: { ...it.task, ...patch } } : it));
-  }
-  function patchCustomField(taskId: string, defId: string, value: unknown) {
-    patchRows((it) => {
-      if (it.task.id !== taskId) return it;
-      const cf = { ...(it.task.customFields as Record<string, unknown> | null ?? {}) };
-      if (value === undefined) delete cf[defId];
-      else cf[defId] = value;
-      return { ...it, task: { ...it.task, customFields: cf } };
-    });
-  }
+  }, []);
+  const patchTask = useCallback(
+    (taskId: string, patch: Partial<TaskWithMeta["task"]>) => {
+      patchRows((it) => (it.task.id === taskId ? { ...it, task: { ...it.task, ...patch } } : it));
+    },
+    [patchRows],
+  );
+  const patchCustomField = useCallback(
+    (taskId: string, defId: string, value: unknown) => {
+      patchRows((it) => {
+        if (it.task.id !== taskId) return it;
+        const cf = { ...(it.task.customFields as Record<string, unknown> | null ?? {}) };
+        if (value === undefined) delete cf[defId];
+        else cf[defId] = value;
+        return { ...it, task: { ...it.task, customFields: cf } };
+      });
+    },
+    [patchRows],
+  );
 
   // ── column order ──────────────────────────────────────────────────────────
   const defaultOrder = useMemo(
@@ -284,7 +668,7 @@ export function TaskTable({
   const isFirstRender = useRef(true);
   useEffect(() => {
     if (isFirstRender.current) { isFirstRender.current = false; return; }
-    startTransition(() => { saveTableColumnOrder(listId, columnOrder); });
+    startTransition(() => { saveTableColumnOrder(listId, columnOrder, viewId); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columnOrder]);
 
@@ -340,6 +724,7 @@ export function TaskTable({
           sort,
           offset: pageIdx * PAGE_SIZE,
           limit: PAGE_SIZE,
+          showClosed,
         });
         setRowsByOffset((prev) => {
           const next = new Map(prev);
@@ -351,7 +736,7 @@ export function TaskTable({
         toast.error("Failed to load tasks");
       }
     },
-    [listId, conditions, groupBy, sort],
+    [listId, conditions, groupBy, sort, showClosed],
   );
 
   // Sort changes invalidate every cached offset.
@@ -502,7 +887,7 @@ export function TaskTable({
     const params = new URLSearchParams(window.location.search);
     params.set("groupBy", value);
     router.push(`${window.location.pathname}?${params.toString()}`);
-    startTransition(() => { saveListViewPrefs(listId, { groupBy: value }); });
+    startTransition(() => { saveListViewPrefs(listId, { groupBy: value, viewId }); });
     setCtxMenu(null);
   }
   function ctxEditOptions() {
@@ -532,156 +917,23 @@ export function TaskTable({
     setCtxMenu(null);
   }
 
-  // ── cell renderer ─────────────────────────────────────────────────────────
-  function renderCell(colId: string, task: TaskWithMeta["task"], assignees: TaskWithMeta["assignees"]) {
-    const cf = (task.customFields ?? {}) as Record<string, unknown>;
-    switch (colId) {
-      case "number":
-        return <TableCell key={colId} className="text-xs text-muted-foreground">{task.number}</TableCell>;
-      case "title":
-        return (
-          <TableCell key={colId} className="truncate">
-            <Link href={`/tasks/task/${task.number}`} className="font-medium hover:underline">{task.title}</Link>
-          </TableCell>
-        );
-      case "status": {
-        if (!canEdit) {
-          const st = statusById.get(task.statusId);
-          return (
-            <TableCell key={colId} className="text-sm" style={st ? { color: st.color } : undefined}>
-              {st?.name ?? "—"}
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={colId} className="p-0.5">
-            <StatusSelectCell
-              taskId={task.id}
-              statusId={task.statusId}
-              statuses={statuses}
-              onSaved={(next) => patchTask(task.id, { statusId: next })}
-            />
-          </TableCell>
-        );
-      }
-      case "priority": {
-        if (!canEdit) {
-          return (
-            <TableCell key={colId} className="text-sm capitalize">
-              {task.priority ?? "—"}
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={colId} className="p-0.5">
-            <PrioritySelectCell
-              taskId={task.id}
-              priority={task.priority}
-              onSaved={(next) => patchTask(task.id, { priority: next })}
-            />
-          </TableCell>
-        );
-      }
-      case "due": {
-        if (!canEdit) {
-          return (
-            <TableCell key={colId} className="text-sm">
-              {task.dueDate
-                ? new Date(task.dueDate).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })
-                : "—"}
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={colId} className="p-0.5">
-            <TaskDateCell
-              taskId={task.id}
-              field="dueDate"
-              value={task.dueDate}
-              onSaved={(next) => patchTask(task.id, { dueDate: next })}
-            />
-          </TableCell>
-        );
-      }
-      case "start_date": {
-        if (!canEdit) {
-          return (
-            <TableCell key={colId} className="text-sm">
-              {task.startDate
-                ? new Date(task.startDate).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })
-                : "—"}
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={colId} className="p-0.5">
-            <TaskDateCell
-              taskId={task.id}
-              field="startDate"
-              value={task.startDate}
-              onSaved={(next) => patchTask(task.id, { startDate: next })}
-            />
-          </TableCell>
-        );
-      }
-      case "created_at": return (
-        <TableCell key={colId} className="text-sm">
-          {task.createdAt ? new Date(task.createdAt).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"}
-        </TableCell>
-      );
-      case "closed_at": return (
-        <TableCell key={colId} className="text-sm">
-          {task.completedAt ? new Date(task.completedAt).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"}
-        </TableCell>
-      );
-      case "assignees":
-        return (
-          <TableCell key={colId} className="p-0.5" onClick={(e) => e.stopPropagation()}>
-            <AssigneeSelect
-              taskId={task.id}
-              users={activeUsers}
-              selectedUsers={assignees}
-              disabled={!canEdit}
-            />
-          </TableCell>
-        );
-      default:
-        if (colId.startsWith("field-")) {
-          const defId = colId.slice(6);
-          const def = fieldDefs.find((d) => d.id === defId);
-          if (!def) return null;
-          if (!canEdit) {
-            return (
-              <TableCell key={colId} className="truncate text-sm">
-                {renderFieldValue(def, cf[defId], userNames)}
-              </TableCell>
-            );
-          }
-          return (
-            <TableCell key={colId} className="p-0.5">
-              <CustomFieldEditCell
-                taskId={task.id}
-                def={def}
-                value={cf[defId]}
-                users={activeUsers}
-                onSaved={(next) => patchCustomField(task.id, defId, next)}
-              />
-            </TableCell>
-          );
-        }
-        return null;
-    }
-  }
-
-  function renderTaskRow(
-    vIndex: number,
-    task: TaskWithMeta["task"],
-    assignees: TaskWithMeta["assignees"],
-  ) {
+  function renderTaskRow(vIndex: number, item: TaskWithMeta) {
     return (
-      <TableRow key={task.id} data-index={vIndex} ref={virtualizer.measureElement}>
-        {orderedColumns.map((col) => renderCell(col.id, task, assignees))}
-      </TableRow>
+      <TaskRow
+        key={item.task.id}
+        vIndex={vIndex}
+        item={item}
+        orderedColumns={orderedColumns}
+        canEdit={canEdit}
+        statuses={statuses}
+        statusById={statusById}
+        fieldDefs={fieldDefs}
+        userNames={userNames}
+        activeUsers={activeUsers}
+        spaceTags={spaceTags}
+        onPatchTask={patchTask}
+        onPatchCustomField={patchCustomField}
+      />
     );
   }
 
@@ -781,6 +1033,9 @@ export function TaskTable({
     count: virtualCount,
     getScrollElement: () => scrollEl,
     estimateSize: (i) => (resolveEntry(i).kind === "header" ? 42 : 37),
+    // Fixed row heights — no ResizeObserver thrash. Overscan keeps a buffer of
+    // cheap display-only rows ready so trackpad flings stay within pre-rendered
+    // content. Editors are not mounted per-row, so overscan is nearly free.
     overscan: 12,
   });
   const virtualRows = virtualizer.getVirtualItems();
@@ -866,7 +1121,11 @@ export function TaskTable({
         </DropdownMenu>
       </div>
 
-      <div ref={setScrollEl} className="min-h-0 flex-1 overflow-auto">
+      <div
+        ref={setScrollEl}
+        className="min-h-0 flex-1 overflow-auto overscroll-contain [contain:strict] [scrollbar-gutter:stable]"
+        style={{ WebkitOverflowScrolling: "touch" }}
+      >
       <Table className="table-fixed" style={{ width: totalWidth }}>
         <colgroup>
           {orderedColumns.map((col) => <col key={col.id} style={{ width: columnWidth(col) }} />)}
@@ -928,7 +1187,6 @@ export function TaskTable({
                 <TableRow
                   key={`h-${seg.key}`}
                   data-index={vRow.index}
-                  ref={virtualizer.measureElement}
                   className="cursor-pointer bg-muted/40 hover:bg-muted/60"
                   onClick={() => toggleGroup(seg.key)}
                 >
@@ -954,7 +1212,6 @@ export function TaskTable({
                 <TableRow
                   key={`c-${seg.key}`}
                   data-index={vRow.index}
-                  ref={virtualizer.measureElement}
                   className="bg-muted/20 text-xs text-muted-foreground"
                 >
                   {orderedColumns.map((col) => {
@@ -973,7 +1230,6 @@ export function TaskTable({
                 <TableRow
                   key={`skeleton-${entry.offset}`}
                   data-index={vRow.index}
-                  ref={virtualizer.measureElement}
                   className="animate-pulse"
                 >
                   {orderedColumns.map((col, i) => (
@@ -984,7 +1240,7 @@ export function TaskTable({
                 </TableRow>
               );
             }
-            return renderTaskRow(vRow.index, item.task, item.assignees);
+            return renderTaskRow(vRow.index, item);
           })}
           {paddingBottom > 0 && (
             <tr aria-hidden style={{ height: paddingBottom }}><td colSpan={colSpan} className="p-0" /></tr>

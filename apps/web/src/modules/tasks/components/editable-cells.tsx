@@ -1,7 +1,8 @@
 "use client";
 
-import { Check, X } from "lucide-react";
-import { useRef, useState, useTransition } from "react";
+import { Check, Pencil, X } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -11,7 +12,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { updateTaskCustomField, updateTaskDate, updateTaskPriority, updateTaskStatus } from "../actions";
+import {
+  updateTaskCustomField,
+  updateTaskDate,
+  updateTaskPriority,
+  updateTaskStatus,
+  updateTaskTitle,
+} from "../actions";
 import { PRIORITY_STYLES } from "./task-card";
 
 const PRIORITY_OPTIONS = ["urgent", "high", "normal", "low"] as const;
@@ -36,6 +43,8 @@ function LazyPicker({
   selectedId,
   onSelect,
   clearable,
+  defaultOpen = false,
+  onOpenChange,
 }: {
   display: React.ReactNode;
   displayClassName?: string;
@@ -44,9 +53,19 @@ function LazyPicker({
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   clearable?: boolean;
+  /** Open immediately when mounted (click-to-edit cells). */
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  function handleOpenChange(next: boolean) {
+    setOpen(next);
+    onOpenChange?.(next);
+  }
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -90,11 +109,15 @@ export function StatusSelectCell({
   statusId,
   statuses,
   onSaved,
+  defaultOpen,
+  onOpenChange,
 }: {
   taskId: string;
   statusId: string;
   statuses: { id: string; name: string; color: string }[];
   onSaved: (statusId: string) => void;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [, startTransition] = useTransition();
   const current = statuses.find((s) => s.id === statusId);
@@ -105,6 +128,8 @@ export function StatusSelectCell({
       displayStyle={current ? { color: current.color } : undefined}
       options={statuses.map((s) => ({ id: s.id, label: s.name, color: s.color }))}
       selectedId={statusId}
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
       onSelect={(next) => {
         if (!next || next === statusId) return;
         onSaved(next);
@@ -118,10 +143,14 @@ export function PrioritySelectCell({
   taskId,
   priority,
   onSaved,
+  defaultOpen,
+  onOpenChange,
 }: {
   taskId: string;
   priority: "urgent" | "high" | "normal" | "low" | null;
   onSaved: (priority: "urgent" | "high" | "normal" | "low" | null) => void;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [, startTransition] = useTransition();
 
@@ -132,6 +161,8 @@ export function PrioritySelectCell({
       options={PRIORITY_OPTIONS.map((p) => ({ id: p, label: p }))}
       selectedId={priority}
       clearable
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
       onSelect={(nextId) => {
         const next = (nextId ?? null) as typeof priority;
         if (next === priority) return;
@@ -154,11 +185,16 @@ function formatDate(value: string | null): string | null {
 export function DateEditCell({
   value,
   onCommit,
+  startEditing = false,
+  onCancel,
 }: {
   value: string | null;
   onCommit: (value: string | null) => void;
+  /** Open in edit mode immediately (table click-to-edit). */
+  startEditing?: boolean;
+  onCancel?: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(startEditing);
   const [, startTransition] = useTransition();
 
   if (!editing) {
@@ -183,8 +219,18 @@ export function DateEditCell({
       onBlur={(e) => {
         const next = e.target.value || null;
         setEditing(false);
-        if (next === value) return;
+        if (next === value) {
+          onCancel?.();
+          return;
+        }
         startTransition(() => runSave(async () => onCommit(next)));
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setEditing(false);
+          onCancel?.();
+        }
       }}
       onClick={(e) => e.stopPropagation()}
       className="h-7 w-full rounded-md border bg-background px-1.5 text-sm ring-1 ring-ring"
@@ -197,20 +243,158 @@ export function TaskDateCell({
   field,
   value,
   onSaved,
+  startEditing,
+  onCancel,
 }: {
   taskId: string;
   field: "dueDate" | "startDate";
   value: string | null;
   onSaved: (value: string | null) => void;
+  startEditing?: boolean;
+  onCancel?: () => void;
 }) {
   return (
     <DateEditCell
       value={value}
+      startEditing={startEditing}
+      onCancel={onCancel}
       onCommit={async (next) => {
         onSaved(next);
         await updateTaskDate(taskId, field, next);
       }}
     />
+  );
+}
+
+// ─── inline title edit (table view: pen next to the task name link) ───────────
+
+/**
+ * Renders the task title as a link, with a small pencil that switches to an
+ * inline input so the name can be renamed without opening the task page.
+ *
+ * Pass `trailing` (e.g. the tag toggle) to place content between the title and
+ * the pencil: Title · trailing · ✏️
+ */
+export function TitleEditCell({
+  taskId,
+  number,
+  title,
+  canEdit,
+  onSaved,
+  trailing,
+  startEditing = false,
+}: {
+  taskId: string;
+  number: string;
+  title: string;
+  canEdit: boolean;
+  onSaved: (title: string) => void;
+  /** Rendered after the title link and before the edit pencil (e.g. tag toggle). */
+  trailing?: ReactNode;
+  /** Open the input immediately (table click-to-edit). */
+  startEditing?: boolean;
+}) {
+  const [editing, setEditing] = useState(startEditing);
+  const [draft, setDraft] = useState(title);
+  const [, startTransition] = useTransition();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setDraft(title);
+  }, [title]);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  function cancel() {
+    setDraft(title);
+    setEditing(false);
+  }
+
+  function commit() {
+    const next = draft.trim();
+    if (!next) {
+      toast.error("Title cannot be empty");
+      setDraft(title);
+      setEditing(false);
+      return;
+    }
+    setEditing(false);
+    if (next === title) return;
+    onSaved(next);
+    startTransition(() =>
+      runSave(async () => {
+        try {
+          await updateTaskTitle(taskId, next);
+        } catch (err) {
+          onSaved(title); // roll back optimistic patch
+          throw err;
+        }
+      }),
+    );
+  }
+
+  if (editing) {
+    return (
+      <div className="flex min-w-0 flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          maxLength={300}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              cancel();
+            }
+          }}
+          className="h-7 min-w-0 flex-1 rounded-md border bg-background px-1.5 text-sm font-medium ring-1 ring-ring"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/title flex min-w-0 items-center gap-0.5">
+      <Link
+        href={`/tasks/task/${number}`}
+        className="min-w-0 truncate font-medium hover:underline"
+      >
+        {title}
+      </Link>
+      {trailing}
+      {canEdit && (
+        <button
+          type="button"
+          title="Edit title"
+          aria-label="Edit title"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDraft(title);
+            setEditing(true);
+          }}
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center rounded-md",
+            "text-muted-foreground transition-colors",
+            "hover:bg-muted hover:text-foreground",
+            "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
+          )}
+        >
+          <Pencil className="size-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -326,11 +510,13 @@ export function MultiSelectEditCell({
   onCommit,
 }: {
   values: string[];
-  options: { id: string; label: string }[];
+  options: { id: string; label: string; color?: string }[];
   onCommit: (values: string[]) => Promise<void> | void;
 }) {
   const [, startTransition] = useTransition();
-  const labels = values.map((v) => options.find((o) => o.id === v)?.label ?? v);
+  const selectedOptions = values
+    .map((v) => options.find((o) => o.id === v))
+    .filter((o): o is (typeof options)[number] => !!o);
 
   function toggle(id: string) {
     const next = values.includes(id) ? values.filter((v) => v !== id) : [...values, id];
@@ -343,9 +529,23 @@ export function MultiSelectEditCell({
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
-          className="block w-full truncate rounded px-1.5 py-1 text-left text-sm hover:bg-muted"
+          className="flex min-h-7 w-full flex-wrap items-center gap-1 rounded px-1.5 py-1 text-left text-sm hover:bg-muted"
         >
-          {labels.length > 0 ? labels.join(", ") : <span className="text-muted-foreground">—</span>}
+          {selectedOptions.length > 0 ? (
+            selectedOptions.map((o) => (
+              <span
+                key={o.id}
+                className="rounded px-1.5 py-0.5 text-xs font-medium"
+                style={
+                  o.color ? { backgroundColor: `${o.color}26`, color: o.color } : { backgroundColor: "var(--muted)" }
+                }
+              >
+                {o.label}
+              </span>
+            ))
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="max-h-72">
@@ -356,6 +556,9 @@ export function MultiSelectEditCell({
             onCheckedChange={() => toggle(o.id)}
             onSelect={(e) => e.preventDefault()}
           >
+            {o.color && (
+              <span className="mr-1.5 size-2.5 shrink-0 rounded-full" style={{ backgroundColor: o.color }} />
+            )}
             {o.label}
           </DropdownMenuCheckboxItem>
         ))}

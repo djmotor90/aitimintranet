@@ -309,10 +309,19 @@ function ConditionRow({
 
 // ─── filter popover ────────────────────────────────────────────────────────────
 
-function FilterPopover({ fields }: { fields: FilterField[] }) {
+function FilterPopover({
+  fields,
+  listId,
+  viewId,
+}: {
+  fields: FilterField[];
+  listId?: string;
+  viewId?: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
+  const [, startTransition] = useTransition();
 
   // draft: working copy inside the popover (not yet committed to URL)
   type DraftCondition = FilterCondition & { _id: string };
@@ -362,15 +371,18 @@ function FilterPopover({ fields }: { fields: FilterField[] }) {
     const params = new URLSearchParams(searchParams.toString());
     // strip conditions with empty value (except ops that don't need one)
     const valid = draft.filter((c) => c.value !== "" || c.op === "is_empty" || c.op === "is_not_empty");
+    const filtersPayload = valid.map(({ _id: _ignored, ...rest }) => rest);
     if (valid.length > 0) {
-      params.set(
-        "filters",
-        JSON.stringify(valid.map(({ _id: _ignored, ...rest }) => rest)),
-      );
+      params.set("filters", JSON.stringify(filtersPayload));
     } else {
       params.delete("filters");
     }
     router.push(`?${params.toString()}`);
+    if (listId && viewId) {
+      startTransition(() => {
+        void saveListViewPrefs(listId, { viewId, filters: filtersPayload });
+      });
+    }
     setOpen(false);
   }
 
@@ -379,6 +391,11 @@ function FilterPopover({ fields }: { fields: FilterField[] }) {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("filters");
     router.push(`?${params.toString()}`);
+    if (listId && viewId) {
+      startTransition(() => {
+        void saveListViewPrefs(listId, { viewId, filters: [] });
+      });
+    }
     setOpen(false);
   }
 
@@ -489,7 +506,15 @@ interface GroupByOption {
   label: string;
 }
 
-function GroupByPopover({ options, listId }: { options: GroupByOption[]; listId: string }) {
+function GroupByPopover({
+  options,
+  listId,
+  viewId,
+}: {
+  options: GroupByOption[];
+  listId: string;
+  viewId?: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
@@ -506,7 +531,7 @@ function GroupByPopover({ options, listId }: { options: GroupByOption[]; listId:
     }
     router.push(`?${params.toString()}`);
     startTransition(() => {
-      saveListViewPrefs(listId, { groupBy: value || "" });
+      saveListViewPrefs(listId, { groupBy: value || "", viewId });
     });
     setOpen(false);
   }
@@ -568,12 +593,17 @@ export function FilterBar({
   fieldDefs,
   activeUsers,
   view,
+  spaceTags = [],
+  viewId,
 }: {
   listId: string;
   statuses: { id: string; name: string; color: string }[];
   fieldDefs: { id: string; key: string; label: string; type: string; options: unknown }[];
   activeUsers: { id: string; displayName: string }[];
   view: "board" | "table";
+  spaceTags?: { id: string; name: string; color: string }[];
+  /** Active named list view — prefs are persisted onto it when set. */
+  viewId?: string;
 }) {
   // Build unified field list with all options resolved
   const userOptions = activeUsers.map((u) => ({ id: u.id, label: u.displayName }));
@@ -597,6 +627,16 @@ export function FilterBar({
       type: "assignee",
       options: userOptions,
     },
+    ...(spaceTags.length > 0
+      ? [
+          {
+            id: "tag",
+            label: "Tag",
+            type: "status" as FieldType, // same is / is_not operators as status
+            options: spaceTags.map((t) => ({ id: t.id, label: t.name })),
+          },
+        ]
+      : []),
     ...fieldDefs.map((d) => ({
       id: `cf_${d.id}`,
       label: d.label,
@@ -622,8 +662,10 @@ export function FilterBar({
 
   return (
     <div className="flex items-center gap-2">
-      <FilterPopover fields={fields} />
-      {view !== "board" && <GroupByPopover options={groupByOptions} listId={listId} />}
+      <FilterPopover fields={fields} listId={listId} viewId={viewId} />
+      {view !== "board" && (
+        <GroupByPopover options={groupByOptions} listId={listId} viewId={viewId} />
+      )}
     </div>
   );
 }

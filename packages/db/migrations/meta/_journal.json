@@ -50,6 +50,20 @@
       "when": 1784445811423,
       "tag": "0006_graceful_mephisto",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784500000000,
+      "tag": "0007_task_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784600000000,
+      "tag": "0008_list_views",
+      "breakpoints": true
     }
   ]
 }

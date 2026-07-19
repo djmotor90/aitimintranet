@@ -2,6 +2,7 @@ import Link from "next/link";
 import { UserAvatar } from "@/components/shell/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { TagChips } from "./tag-picker";
 
 export const PRIORITY_STYLES: Record<string, string> = {
   urgent: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
@@ -17,6 +18,7 @@ export interface TaskCardData {
   priority: string | null;
   dueDate: string | null;
   assignees: { id: string; displayName: string; photoKey: string | null }[];
+  tags?: { id: string; name: string; color: string }[];
 }
 
 export function TaskCardContent({ task }: { task: TaskCardData }) {
@@ -31,6 +33,7 @@ export function TaskCardContent({ task }: { task: TaskCardData }) {
           {task.title}
         </Link>
       </div>
+      {task.tags && task.tags.length > 0 && <TagChips tags={task.tags} />}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground">{task.number}</span>
         {task.priority && (

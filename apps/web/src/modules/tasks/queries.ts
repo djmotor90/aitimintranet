@@ -6,11 +6,14 @@ import {
   folders,
   listMembers,
   lists,
+  listViews,
   spaceMembers,
   spaces,
   statuses,
+  tags,
   taskAssignees,
   tasks,
+  taskTags,
   userGroupMemberships,
   users,
 } from "@aitim/db";
@@ -236,6 +239,80 @@ export const getListBySlug = cache(async (spaceId: string, slug: string) => {
   return list ?? null;
 });
 
+export type ListViewType = "table" | "board";
+
+export interface ListViewRow {
+  id: string;
+  listId: string;
+  name: string;
+  type: ListViewType;
+  filters: unknown;
+  groupBy: string | null;
+  showClosed: boolean;
+  tableColumnOrder: unknown;
+  position: string;
+}
+
+/** All named views for a list, ordered by position. */
+export async function getListViews(listId: string): Promise<ListViewRow[]> {
+  const rows = await db
+    .select({
+      id: listViews.id,
+      listId: listViews.listId,
+      name: listViews.name,
+      type: listViews.type,
+      filters: listViews.filters,
+      groupBy: listViews.groupBy,
+      showClosed: listViews.showClosed,
+      tableColumnOrder: listViews.tableColumnOrder,
+      position: listViews.position,
+    })
+    .from(listViews)
+    .where(eq(listViews.listId, listId))
+    .orderBy(asc(listViews.position), asc(listViews.createdAt));
+
+  return rows.map((r) => ({
+    ...r,
+    type: r.type === "board" ? "board" : "table",
+  }));
+}
+
+/**
+ * Ensure a list has at least one view (new lists created after migration).
+ * Returns the views, creating List + Board defaults when empty.
+ */
+export async function ensureListViews(listId: string): Promise<ListViewRow[]> {
+  const existing = await getListViews(listId);
+  if (existing.length > 0) return existing;
+
+  const [list] = await db.select().from(lists).where(eq(lists.id, listId));
+  if (!list) return [];
+
+  await db.insert(listViews).values([
+    {
+      listId,
+      name: "List",
+      type: "table",
+      filters: [],
+      groupBy: list.defaultGroupBy,
+      showClosed: false,
+      tableColumnOrder: list.tableColumnOrder,
+      position: "a0",
+    },
+    {
+      listId,
+      name: "Board",
+      type: "board",
+      filters: [],
+      groupBy: null,
+      showClosed: false,
+      tableColumnOrder: null,
+      position: "a1",
+    },
+  ]);
+  return getListViews(listId);
+}
+
 export const getStatusesForList = cache(async (listId: string) => {
   return db
     .select()
@@ -253,36 +330,82 @@ export const getFieldDefinitions = cache(async (listId: string, includeArchived 
   return includeArchived ? rows : rows.filter((r) => !r.isArchived);
 });
 
+export interface TaskTag {
+  id: string;
+  name: string;
+  color: string;
+}
+
 export interface TaskWithMeta {
   task: typeof tasks.$inferSelect;
   assignees: { id: string; displayName: string; photoKey: string | null }[];
+  tags: TaskTag[];
 }
 
 async function attachAssignees(taskRows: (typeof tasks.$inferSelect)[]): Promise<TaskWithMeta[]> {
   if (taskRows.length === 0) return [];
-  const assigneeRows = await db
-    .select({
-      taskId: taskAssignees.taskId,
-      id: users.id,
-      displayName: users.displayName,
-      photoKey: users.photoKey,
-    })
-    .from(taskAssignees)
-    .innerJoin(users, eq(taskAssignees.userId, users.id))
-    .where(
-      inArray(
-        taskAssignees.taskId,
-        taskRows.map((t) => t.id),
-      ),
-    );
+  const taskIds = taskRows.map((t) => t.id);
 
-  const byTask = new Map<string, TaskWithMeta["assignees"]>();
+  const [assigneeRows, tagRows] = await Promise.all([
+    db
+      .select({
+        taskId: taskAssignees.taskId,
+        id: users.id,
+        displayName: users.displayName,
+        photoKey: users.photoKey,
+      })
+      .from(taskAssignees)
+      .innerJoin(users, eq(taskAssignees.userId, users.id))
+      .where(inArray(taskAssignees.taskId, taskIds)),
+    db
+      .select({
+        taskId: taskTags.taskId,
+        id: tags.id,
+        name: tags.name,
+        color: tags.color,
+      })
+      .from(taskTags)
+      .innerJoin(tags, eq(taskTags.tagId, tags.id))
+      .where(inArray(taskTags.taskId, taskIds))
+      .orderBy(asc(tags.name)),
+  ]);
+
+  const assigneesByTask = new Map<string, TaskWithMeta["assignees"]>();
   for (const row of assigneeRows) {
-    const list = byTask.get(row.taskId) ?? [];
+    const list = assigneesByTask.get(row.taskId) ?? [];
     list.push({ id: row.id, displayName: row.displayName, photoKey: row.photoKey });
-    byTask.set(row.taskId, list);
+    assigneesByTask.set(row.taskId, list);
   }
-  return taskRows.map((task) => ({ task, assignees: byTask.get(task.id) ?? [] }));
+  const tagsByTask = new Map<string, TaskTag[]>();
+  for (const row of tagRows) {
+    const list = tagsByTask.get(row.taskId) ?? [];
+    list.push({ id: row.id, name: row.name, color: row.color });
+    tagsByTask.set(row.taskId, list);
+  }
+  return taskRows.map((task) => ({
+    task,
+    assignees: assigneesByTask.get(task.id) ?? [],
+    tags: tagsByTask.get(task.id) ?? [],
+  }));
+}
+
+/** All tags defined in a space (for pickers + filters). */
+export const getTagsForSpace = cache(async (spaceId: string): Promise<TaskTag[]> => {
+  return db
+    .select({ id: tags.id, name: tags.name, color: tags.color })
+    .from(tags)
+    .where(eq(tags.spaceId, spaceId))
+    .orderBy(asc(tags.name));
+});
+
+/** Tags currently on a single task. */
+export async function getTagsForTask(taskId: string): Promise<TaskTag[]> {
+  return db
+    .select({ id: tags.id, name: tags.name, color: tags.color })
+    .from(taskTags)
+    .innerJoin(tags, eq(taskTags.tagId, tags.id))
+    .where(eq(taskTags.taskId, taskId))
+    .orderBy(asc(tags.name));
 }
 
 export async function getTasksForList(listId: string): Promise<TaskWithMeta[]> {
@@ -328,6 +451,10 @@ function conditionSql(c: TaskFilterCondition, defsById: Map<string, FieldDefRow>
   if (c.field === "assignee") {
     const exists = sql`EXISTS (SELECT 1 FROM ${taskAssignees} ta WHERE ta.task_id = ${tasks.id} AND ta.user_id = ${c.value})`;
     return c.op === "is" ? exists : sql`NOT ${exists}`;
+  }
+  if (c.field === "tag") {
+    const exists = sql`EXISTS (SELECT 1 FROM ${taskTags} tt WHERE tt.task_id = ${tasks.id} AND tt.tag_id = ${c.value})`;
+    return c.op === "is" || c.op === "includes" ? exists : sql`NOT ${exists}`;
   }
   if (c.field.startsWith("cf_")) {
     const defId = c.field.slice(3);
@@ -437,14 +564,29 @@ export async function getTasksPage(params: {
   sort?: TaskSortSpec | null;
   limit: number;
   offset: number;
+  /**
+   * When false (default), tasks whose status category is `done` or `cancelled`
+   * are excluded — matching ClickUp's "closed tasks are hidden" list behavior.
+   * Pass true (e.g. URL `closed=1`) to include them.
+   */
+  showClosed?: boolean;
   /** Skip the count/groupCounts queries (used by follow-up pages). */
   countsAlreadyKnown?: boolean;
 }): Promise<TaskPage> {
-  const { listId, conditions = [], groupBy, sort, limit, offset } = params;
+  const { listId, conditions = [], groupBy, sort, limit, offset, showClosed = false } = params;
   const defs = await getFieldDefinitions(listId, true);
   const defsById = new Map(defs.map((d) => [d.id, d]));
 
-  const where = sql`${tasks.listId} = ${listId} AND ${tasks.isArchived} = false AND (${conditionsSql(conditions, defsById)})`;
+  // Closed = status categories done | cancelled (ClickUp "Closed" group).
+  const openOnlySql = showClosed
+    ? sql`true`
+    : sql`EXISTS (
+        SELECT 1 FROM ${statuses} s
+        WHERE s.id = ${tasks.statusId}
+          AND s.category NOT IN ('done', 'cancelled')
+      )`;
+
+  const where = sql`${tasks.listId} = ${listId} AND ${tasks.isArchived} = false AND (${openOnlySql}) AND (${conditionsSql(conditions, defsById)})`;
 
   const rows = await db
     .select()
@@ -530,6 +672,112 @@ export const getActiveUsers = cache(async () => {
     .where(eq(users.isActive, true))
     .orderBy(asc(users.displayName));
 });
+
+/**
+ * Expand membership rows that may point at a user OR an Entra group into
+ * concrete active user ids.
+ */
+async function expandMemberUserIds(
+  rows: { userId: string | null; groupId: string | null }[],
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const groupIds: string[] = [];
+  for (const r of rows) {
+    if (r.userId) ids.add(r.userId);
+    if (r.groupId) groupIds.push(r.groupId);
+  }
+  if (groupIds.length > 0) {
+    const groupUsers = await db
+      .select({ userId: userGroupMemberships.userId })
+      .from(userGroupMemberships)
+      .where(inArray(userGroupMemberships.groupId, groupIds));
+    for (const g of groupUsers) ids.add(g.userId);
+  }
+  return ids;
+}
+
+/**
+ * Users who can access a list (and therefore its tasks) — mirrors RBAC:
+ * platform admins, space owners always; private lists only + direct list
+ * members; otherwise space/folder inheritance along the parent chain.
+ * Used for @-mention pickers so we never offer people without access.
+ */
+export async function getUsersWithListAccess(
+  listId: string,
+): Promise<{ id: string; displayName: string; photoKey: string | null }[]> {
+  const [list] = await db.select().from(lists).where(eq(lists.id, listId));
+  if (!list) return [];
+
+  const candidateIds = new Set<string>();
+
+  // Platform admins always have access.
+  const admins = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.isActive, true), eq(users.platformRole, "admin")));
+  for (const a of admins) candidateIds.add(a.id);
+
+  // Space memberships (user + group).
+  const spaceMemberRows = await db
+    .select({
+      userId: spaceMembers.userId,
+      groupId: spaceMembers.groupId,
+      role: spaceMembers.role,
+    })
+    .from(spaceMembers)
+    .where(eq(spaceMembers.spaceId, list.spaceId));
+
+  const spaceOwnerRows = spaceMemberRows.filter((r) => r.role === "owner");
+  const spaceOwnerIds = await expandMemberUserIds(spaceOwnerRows);
+  for (const id of spaceOwnerIds) candidateIds.add(id);
+
+  // Direct list members (always relevant; for private lists they are the only non-owner path).
+  const listMemberRows = await db
+    .select({ userId: listMembers.userId, groupId: listMembers.groupId })
+    .from(listMembers)
+    .where(eq(listMembers.listId, listId));
+  const listMemberIds = await expandMemberUserIds(listMemberRows);
+  for (const id of listMemberIds) candidateIds.add(id);
+
+  if (!list.isPrivate) {
+    // Walk folder chain: private folders only contribute their members;
+    // non-private folders also inherit parent access; space root = all space members.
+    let folderId: string | null = list.folderId;
+    let hitPrivateFolder = false;
+
+    while (folderId) {
+      const [folder] = await db.select().from(folders).where(eq(folders.id, folderId));
+      if (!folder) break;
+
+      const folderMemberRows = await db
+        .select({ userId: folderMembers.userId, groupId: folderMembers.groupId })
+        .from(folderMembers)
+        .where(eq(folderMembers.folderId, folderId));
+      const folderMemberIds = await expandMemberUserIds(folderMemberRows);
+      for (const id of folderMemberIds) candidateIds.add(id);
+
+      if (folder.isPrivate) {
+        hitPrivateFolder = true;
+        break; // parent roles do not pierce private folders
+      }
+      folderId = folder.parentFolderId;
+    }
+
+    if (!hitPrivateFolder) {
+      // Full space membership can see this list.
+      const allSpaceIds = await expandMemberUserIds(spaceMemberRows);
+      for (const id of allSpaceIds) candidateIds.add(id);
+    }
+  }
+
+  if (candidateIds.size === 0) return [];
+
+  return db
+    .select({ id: users.id, displayName: users.displayName, photoKey: users.photoKey })
+    .from(users)
+    .where(and(eq(users.isActive, true), inArray(users.id, [...candidateIds])))
+    .orderBy(asc(users.displayName));
+}
 
 export interface SpaceMemberRow {
   id: string;
