@@ -1,14 +1,17 @@
 "use server";
 
 import {
+  activityLog,
   customFieldDefinitions,
   db,
   folderMembers,
   folders,
+  formSubmissions,
   listMembers,
   lists,
   listViews,
   modules,
+  publicForms,
   spaceMembers,
   spaces,
   spaceTaskCounters,
@@ -164,6 +167,154 @@ export async function createList(formData: FormData) {
   revalidatePath(`/tasks/${space.slug}`);
 }
 
+// ---------------------------------------------------------------- archive / trash helpers
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+function revalidateTrashAndTasks(spaceSlug?: string) {
+  revalidatePath("/tasks");
+  revalidatePath("/tasks/trash");
+  if (spaceSlug) revalidatePath(`/tasks/${spaceSlug}`);
+}
+
+/** Permanently remove a list and all dependent rows (tasks, forms, statuses, …). */
+async function purgeListHard(tx: Tx, listId: string) {
+  const formRows = await tx
+    .select({ id: publicForms.id })
+    .from(publicForms)
+    .where(eq(publicForms.listId, listId));
+  if (formRows.length > 0) {
+    const formIds = formRows.map((f) => f.id);
+    await tx.delete(formSubmissions).where(inArray(formSubmissions.formId, formIds));
+    await tx.delete(publicForms).where(inArray(publicForms.id, formIds));
+  }
+  // tasks.list_id and tasks.status_id are NO ACTION — remove tasks before the list/statuses.
+  await tx.delete(tasks).where(eq(tasks.listId, listId));
+  await tx.delete(lists).where(eq(lists.id, listId));
+}
+
+/** Collect folder id + all nested descendant folder ids within a space. */
+async function collectFolderSubtree(spaceId: string, rootFolderId: string): Promise<string[]> {
+  const allFolders = await db
+    .select({ id: folders.id, parentFolderId: folders.parentFolderId })
+    .from(folders)
+    .where(eq(folders.spaceId, spaceId));
+
+  const childrenByParent = new Map<string | null, string[]>();
+  for (const f of allFolders) {
+    const arr = childrenByParent.get(f.parentFolderId) ?? [];
+    arr.push(f.id);
+    childrenByParent.set(f.parentFolderId, arr);
+  }
+
+  const ids: string[] = [];
+  const walk = (fid: string) => {
+    ids.push(fid);
+    for (const child of childrenByParent.get(fid) ?? []) walk(child);
+  };
+  walk(rootFolderId);
+  return ids;
+}
+
+/** Archive a list (hide from sidebar; not in Trash). Space owners only. */
+export async function archiveList(listId: string) {
+  const id = z.string().uuid().parse(listId);
+  const { list, space } = await requireList(id);
+  if (list.deletedAt) throw new Error("Cannot archive a list that is in the Trash");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  await db.transaction(async (tx) => {
+    await tx.update(lists).set({ isArchived: true }).where(eq(lists.id, id));
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "list.archived",
+      payload: { name: list.name, listId: id },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  revalidatePath(listPath(space.slug, list.slug));
+  return { spaceSlug: space.slug };
+}
+
+/** Move a list to Trash (restorable). Space owners only. */
+export async function deleteList(listId: string) {
+  const id = z.string().uuid().parse(listId);
+  const { list, space } = await requireList(id);
+  if (list.deletedAt) throw new Error("List is already in the Trash");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx.update(lists).set({ deletedAt: now }).where(eq(lists.id, id));
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "list.deleted",
+      payload: { name: list.name, listId: id },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
+/** Restore a list from Trash. Space owners only. */
+export async function restoreList(listId: string) {
+  const id = z.string().uuid().parse(listId);
+  const { list, space } = await requireList(id);
+  if (!list.deletedAt) throw new Error("List is not in the Trash");
+  if (space.deletedAt) throw new Error("Restore the space first");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  // If parent folder is still trashed, detach so the list reappears at space root.
+  let folderId = list.folderId;
+  if (folderId) {
+    const [parent] = await db.select().from(folders).where(eq(folders.id, folderId));
+    if (!parent || parent.deletedAt) folderId = null;
+  }
+
+  const slug = await uniqueListSlug(space.id, list.slug, id);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(lists)
+      .set({ deletedAt: null, folderId, slug, isArchived: false })
+      .where(eq(lists.id, id));
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "list.restored",
+      payload: { name: list.name, listId: id },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug, listSlug: slug };
+}
+
+/** Permanently delete a list from Trash. Space owners only. */
+export async function purgeList(listId: string) {
+  const id = z.string().uuid().parse(listId);
+  const { list, space } = await requireList(id);
+  if (!list.deletedAt) throw new Error("Move the list to Trash before permanently deleting");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  await db.transaction(async (tx) => {
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "list.purged",
+      payload: { name: list.name, listId: id },
+    });
+    await purgeListHard(tx, id);
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
 // ---------------------------------------------------------------- folders
 
 const folderRoleSchema = z.enum(["owner", "member", "guest"]);
@@ -213,6 +364,156 @@ export async function createFolder(formData: FormData) {
     });
   });
   revalidatePath(`/tasks/${space.slug}`);
+}
+
+/**
+ * Archive a folder and cascade to nested subfolders + lists inside them.
+ * Space owners only. Does not affect Trash items.
+ */
+export async function archiveFolder(folderId: string) {
+  const id = z.string().uuid().parse(folderId);
+  const { folder, space } = await requireFolder(id);
+  if (folder.deletedAt) throw new Error("Cannot archive a folder that is in the Trash");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  const toArchive = await collectFolderSubtree(space.id, id);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(folders)
+      .set({ isArchived: true })
+      .where(and(inArray(folders.id, toArchive), isNull(folders.deletedAt)));
+    await tx
+      .update(lists)
+      .set({ isArchived: true })
+      .where(
+        and(eq(lists.spaceId, space.id), inArray(lists.folderId, toArchive), isNull(lists.deletedAt)),
+      );
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "folder.archived",
+      payload: { name: folder.name, folderId: id, cascadedFolderCount: toArchive.length },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
+/**
+ * Move a folder (and nested subfolders + lists) to Trash. Restorable.
+ * Space owners only.
+ */
+export async function deleteFolder(folderId: string) {
+  const id = z.string().uuid().parse(folderId);
+  const { folder, space } = await requireFolder(id);
+  if (folder.deletedAt) throw new Error("Folder is already in the Trash");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  const folderIds = await collectFolderSubtree(space.id, id);
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(folders)
+      .set({ deletedAt: now })
+      .where(and(inArray(folders.id, folderIds), isNull(folders.deletedAt)));
+    await tx
+      .update(lists)
+      .set({ deletedAt: now })
+      .where(
+        and(eq(lists.spaceId, space.id), inArray(lists.folderId, folderIds), isNull(lists.deletedAt)),
+      );
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "folder.deleted",
+      payload: { name: folder.name, folderId: id, cascadedFolderCount: folderIds.length },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
+/** Restore a folder (and nested items that were trashed with it) from Trash. */
+export async function restoreFolder(folderId: string) {
+  const id = z.string().uuid().parse(folderId);
+  const { folder, space } = await requireFolder(id);
+  if (!folder.deletedAt) throw new Error("Folder is not in the Trash");
+  if (space.deletedAt) throw new Error("Restore the space first");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  const folderIds = await collectFolderSubtree(space.id, id);
+
+  // If parent is still trashed, reattach at space root.
+  let parentFolderId = folder.parentFolderId;
+  if (parentFolderId) {
+    const [parent] = await db.select().from(folders).where(eq(folders.id, parentFolderId));
+    if (!parent || parent.deletedAt) parentFolderId = null;
+  }
+
+  const slug = await uniqueFolderSlug(space.id, folder.slug, id);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(folders)
+      .set({ deletedAt: null, isArchived: false })
+      .where(inArray(folders.id, folderIds));
+    await tx
+      .update(folders)
+      .set({ parentFolderId, slug })
+      .where(eq(folders.id, id));
+    await tx
+      .update(lists)
+      .set({ deletedAt: null, isArchived: false })
+      .where(and(eq(lists.spaceId, space.id), inArray(lists.folderId, folderIds)));
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "folder.restored",
+      payload: { name: folder.name, folderId: id },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
+/** Permanently delete a folder and nested lists from Trash. */
+export async function purgeFolder(folderId: string) {
+  const id = z.string().uuid().parse(folderId);
+  const { folder, space } = await requireFolder(id);
+  if (!folder.deletedAt) throw new Error("Move the folder to Trash before permanently deleting");
+  const user = await requireUser();
+  await assertSpaceRole(space.id, "owner");
+
+  const folderIds = await collectFolderSubtree(space.id, id);
+  const listRows = await db
+    .select({ id: lists.id })
+    .from(lists)
+    .where(and(eq(lists.spaceId, space.id), inArray(lists.folderId, folderIds)));
+
+  await db.transaction(async (tx) => {
+    await logActivity(tx, {
+      spaceId: space.id,
+      actorId: user.id,
+      verb: "folder.purged",
+      payload: {
+        name: folder.name,
+        folderId: id,
+        cascadedFolderCount: folderIds.length,
+        listCount: listRows.length,
+      },
+    });
+    for (const row of listRows) {
+      await purgeListHard(tx, row.id);
+    }
+    await tx.delete(folders).where(inArray(folders.id, folderIds));
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
 }
 
 export async function setFolderPrivacy(formData: FormData) {
@@ -492,6 +793,140 @@ export async function createSpace(formData: FormData) {
   });
   revalidatePath("/tasks");
   redirect(`/tasks/${newSlug}`);
+}
+
+/** Archive a space (hide from sidebar; not in Trash). Space owners only. */
+export async function archiveSpace(spaceId: string) {
+  const id = z.string().uuid().parse(spaceId);
+  const space = await requireSpace(id);
+  if (space.deletedAt) throw new Error("Cannot archive a space that is in the Trash");
+  const user = await requireUser();
+  await assertSpaceRole(id, "owner");
+
+  await db.transaction(async (tx) => {
+    await tx.update(spaces).set({ isArchived: true }).where(eq(spaces.id, id));
+    // Hide nested content so direct list/folder memberships don't re-surface the space.
+    await tx
+      .update(folders)
+      .set({ isArchived: true })
+      .where(and(eq(folders.spaceId, id), eq(folders.isArchived, false), isNull(folders.deletedAt)));
+    await tx
+      .update(lists)
+      .set({ isArchived: true })
+      .where(and(eq(lists.spaceId, id), eq(lists.isArchived, false), isNull(lists.deletedAt)));
+    await logActivity(tx, {
+      spaceId: id,
+      actorId: user.id,
+      verb: "space.archived",
+      payload: { name: space.name, spaceId: id },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
+/** Move a space (and all folders/lists) to Trash. Restorable. Space owners only. */
+export async function deleteSpace(spaceId: string) {
+  const id = z.string().uuid().parse(spaceId);
+  const space = await requireSpace(id);
+  if (space.deletedAt) throw new Error("Space is already in the Trash");
+  const user = await requireUser();
+  await assertSpaceRole(id, "owner");
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx.update(spaces).set({ deletedAt: now }).where(eq(spaces.id, id));
+    await tx
+      .update(folders)
+      .set({ deletedAt: now })
+      .where(and(eq(folders.spaceId, id), isNull(folders.deletedAt)));
+    await tx
+      .update(lists)
+      .set({ deletedAt: now })
+      .where(and(eq(lists.spaceId, id), isNull(lists.deletedAt)));
+    await logActivity(tx, {
+      spaceId: id,
+      actorId: user.id,
+      verb: "space.deleted",
+      payload: { name: space.name, spaceId: id },
+    });
+  });
+  revalidateTrashAndTasks(space.slug);
+  return { spaceSlug: space.slug };
+}
+
+/** Restore a space and its nested folders/lists from Trash. */
+export async function restoreSpace(spaceId: string) {
+  const id = z.string().uuid().parse(spaceId);
+  const space = await requireSpace(id);
+  if (!space.deletedAt) throw new Error("Space is not in the Trash");
+  const user = await requireUser();
+  // Platform admin or previous owner membership still grants access while trashed.
+  await assertSpaceRole(id, "owner");
+
+  // uniqueValue does not exclude self — pick a free slug if another space took it.
+  let finalSlug = space.slug;
+  const [slugTaken] = await db
+    .select({ id: spaces.id })
+    .from(spaces)
+    .where(and(eq(spaces.slug, space.slug), ne(spaces.id, id)));
+  if (slugTaken) finalSlug = await uniqueValue(spaces.slug, space.slug);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(spaces)
+      .set({ deletedAt: null, isArchived: false, slug: finalSlug })
+      .where(eq(spaces.id, id));
+    // Only restore nested items that were deleted (including those deleted with the space).
+    await tx
+      .update(folders)
+      .set({ deletedAt: null, isArchived: false })
+      .where(and(eq(folders.spaceId, id), sql`${folders.deletedAt} is not null`));
+    await tx
+      .update(lists)
+      .set({ deletedAt: null, isArchived: false })
+      .where(and(eq(lists.spaceId, id), sql`${lists.deletedAt} is not null`));
+    await logActivity(tx, {
+      spaceId: id,
+      actorId: user.id,
+      verb: "space.restored",
+      payload: { name: space.name, spaceId: id },
+    });
+  });
+  revalidateTrashAndTasks(finalSlug);
+  return { spaceSlug: finalSlug };
+}
+
+/**
+ * Permanently delete a space and everything in it from Trash.
+ * Space owners only.
+ */
+export async function purgeSpace(spaceId: string) {
+  const id = z.string().uuid().parse(spaceId);
+  const space = await requireSpace(id);
+  if (!space.deletedAt) throw new Error("Move the space to Trash before permanently deleting");
+  const user = await requireUser();
+  await assertSpaceRole(id, "owner");
+
+  const listRows = await db.select({ id: lists.id }).from(lists).where(eq(lists.spaceId, id));
+
+  await db.transaction(async (tx) => {
+    await logActivity(tx, {
+      spaceId: id,
+      actorId: user.id,
+      verb: "space.purged",
+      payload: { name: space.name, spaceId: id },
+    });
+    for (const row of listRows) {
+      await purgeListHard(tx, row.id);
+    }
+    // activity_log.space_id is NO ACTION — clear before dropping the space.
+    await tx.delete(activityLog).where(eq(activityLog.spaceId, id));
+    await tx.delete(folders).where(eq(folders.spaceId, id));
+    await tx.delete(spaces).where(eq(spaces.id, id));
+  });
+  revalidateTrashAndTasks();
+  return { spaceSlug: space.slug };
 }
 
 /** Lazily fetched by client components (e.g. the sidebar's right-click menu) that need
@@ -1134,7 +1569,28 @@ export async function updateTaskCore(formData: FormData) {
   await assertListRole(list.id, "member");
 
   const title = z.string().min(1).max(300).parse(formData.get("title"));
-  const description = String(formData.get("description") ?? "");
+  // Description: TipTap hybrid JSON `{ text, doc }` or legacy plain string.
+  const descriptionRaw = String(formData.get("description") ?? "");
+  let descriptionValue: { text: string; doc?: unknown } | null = null;
+  if (descriptionRaw.trim()) {
+    try {
+      const parsed = JSON.parse(descriptionRaw) as { text?: string; doc?: unknown };
+      if (parsed && typeof parsed === "object" && (parsed.text || parsed.doc)) {
+        descriptionValue = {
+          text: String(parsed.text ?? "").slice(0, 50_000),
+          doc: parsed.doc,
+        };
+        if (!descriptionValue.text && !parsed.doc) descriptionValue = null;
+      } else {
+        descriptionValue = { text: descriptionRaw.slice(0, 50_000) };
+      }
+    } catch {
+      descriptionValue = { text: descriptionRaw.slice(0, 50_000) };
+    }
+    if (descriptionValue && !descriptionValue.text?.trim() && !descriptionValue.doc) {
+      descriptionValue = null;
+    }
+  }
   const priorityRaw = String(formData.get("priority") ?? "");
   const priority = priorityRaw
     ? z.enum(["urgent", "high", "normal", "low"]).parse(priorityRaw)
@@ -1164,7 +1620,7 @@ export async function updateTaskCore(formData: FormData) {
       .update(tasks)
       .set({
         title,
-        description: description ? { text: description } : null,
+        description: descriptionValue,
         priority,
         dueDate,
         startDate,
@@ -1452,7 +1908,20 @@ export async function archiveTask(formData: FormData) {
 
 export async function addComment(formData: FormData) {
   const taskId = z.string().uuid().parse(formData.get("taskId"));
-  const body = z.string().min(1).max(10_000).parse(formData.get("body"));
+  const bodyRaw = String(formData.get("body") ?? "");
+  // Body may be TipTap hybrid JSON `{ text, doc }` or plain text.
+  let bodyText = bodyRaw;
+  let bodyDoc: unknown = undefined;
+  try {
+    const parsed = JSON.parse(bodyRaw) as { text?: string; doc?: unknown };
+    if (parsed && typeof parsed === "object" && ("text" in parsed || "doc" in parsed)) {
+      bodyText = String(parsed.text ?? "");
+      bodyDoc = parsed.doc;
+    }
+  } catch {
+    // plain text
+  }
+  bodyText = z.string().min(1).max(10_000).parse(bodyText.trim());
   const rawMentionIds = formData.getAll("mentions").map((v) => z.string().uuid().parse(v));
   const parentRaw = formData.get("parentCommentId")?.toString();
   const parentInput = parentRaw ? z.string().uuid().parse(parentRaw) : null;
@@ -1484,6 +1953,10 @@ export async function addComment(formData: FormData) {
     parentCommentId = parent.parentCommentId ?? parent.id;
   }
 
+  const bodyPayload = bodyDoc
+    ? { text: bodyText, doc: bodyDoc }
+    : { text: bodyText };
+
   await db.transaction(async (tx) => {
     const [comment] = await tx
       .insert(comments)
@@ -1491,7 +1964,7 @@ export async function addComment(formData: FormData) {
         taskId,
         authorId: user.id,
         parentCommentId,
-        body: { text: body },
+        body: bodyPayload,
       })
       .returning();
     if (mentionIds.length > 0) {
@@ -1506,7 +1979,7 @@ export async function addComment(formData: FormData) {
       actorId: user.id,
       verb: parentCommentId ? "comment.replied" : "comment.created",
       payload: {
-        preview: body.slice(0, 140),
+        preview: bodyText.slice(0, 140),
         parentCommentId,
         commentId: comment.id,
       },
@@ -1525,7 +1998,7 @@ export async function addComment(formData: FormData) {
   ].filter((id) => !mentionSet.has(id));
 
   const { notifyUsers } = await import("@/lib/notify");
-  const preview = body.slice(0, 140);
+  const preview = bodyText.slice(0, 140);
   await notifyUsers({
     recipientIds: commentRecipients,
     type: "comment",
@@ -1539,6 +2012,90 @@ export async function addComment(formData: FormData) {
     taskId,
     actorId: user.id,
     payload: { preview, number: task.number },
+  });
+
+  revalidatePath(`/tasks/task/${task.number}`);
+}
+
+/** Soft-delete a comment. Author may delete own; platform admins may delete any. */
+export async function deleteComment(formData: FormData) {
+  const commentId = z.string().uuid().parse(formData.get("commentId"));
+  const user = await requireUser();
+  const { comments } = await import("@aitim/db");
+
+  const [row] = await db
+    .select({
+      id: comments.id,
+      authorId: comments.authorId,
+      taskId: comments.taskId,
+      deletedAt: comments.deletedAt,
+    })
+    .from(comments)
+    .where(eq(comments.id, commentId));
+  if (!row || row.deletedAt) throw new Error("Comment not found");
+
+  const { task, list } = await requireTask(row.taskId);
+  await assertListRole(list.id, "guest"); // must at least see the task
+
+  const isAdmin = user.platformRole === "admin";
+  const isAuthor = row.authorId === user.id;
+  if (!isAdmin && !isAuthor) {
+    throw new Error("You can only delete your own comments");
+  }
+
+  await db
+    .update(comments)
+    .set({ deletedAt: new Date() })
+    .where(eq(comments.id, commentId));
+
+  revalidatePath(`/tasks/task/${task.number}`);
+}
+
+/** Delete a task attachment (S3 + DB). Uploader, list members, or platform admin. */
+export async function deleteAttachment(formData: FormData) {
+  const attachmentId = z.string().uuid().parse(formData.get("attachmentId"));
+  const user = await requireUser();
+  const { attachments } = await import("@aitim/db");
+
+  const [row] = await db
+    .select({
+      id: attachments.id,
+      taskId: attachments.taskId,
+      uploaderId: attachments.uploaderId,
+      objectKey: attachments.objectKey,
+      fileName: attachments.fileName,
+    })
+    .from(attachments)
+    .where(eq(attachments.id, attachmentId));
+  if (!row) throw new Error("Attachment not found");
+
+  const { task, list, space } = await requireTask(row.taskId);
+  const listRole = await getListRole(user.id, list.id, user.platformRole);
+  if (!listRole) throw new Error("Forbidden");
+
+  const isAdmin = user.platformRole === "admin";
+  const isUploader = row.uploaderId === user.id;
+  const canEditList = listRole === "owner" || listRole === "member";
+  if (!isAdmin && !isUploader && !canEditList) {
+    throw new Error("You cannot delete this attachment");
+  }
+
+  const { BUCKETS, deleteObject } = await import("@/lib/storage");
+  try {
+    await deleteObject(BUCKETS.attachments, row.objectKey);
+  } catch {
+    // Still remove the DB row if the object is already gone
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.delete(attachments).where(eq(attachments.id, attachmentId));
+    await logActivity(tx, {
+      spaceId: space.id,
+      taskId: task.id,
+      actorId: user.id,
+      verb: "attachment.removed",
+      payload: { fileName: row.fileName, attachmentId },
+    });
   });
 
   revalidatePath(`/tasks/task/${task.number}`);

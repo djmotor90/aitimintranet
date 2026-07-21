@@ -1,4 +1,9 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import type { Readable } from "node:stream";
 
 const globalForS3 = globalThis as unknown as { s3?: S3Client };
@@ -37,4 +42,8 @@ export async function putObject(
 export async function getObjectStream(bucket: string, key: string) {
   const res = await getS3().send(new GetObjectCommand({ Bucket: bucket, Key: key }));
   return { body: res.Body as Readable, contentType: res.ContentType, length: res.ContentLength };
+}
+
+export async function deleteObject(bucket: string, key: string) {
+  await getS3().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }

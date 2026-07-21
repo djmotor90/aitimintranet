@@ -18,7 +18,7 @@ import {
   userGroupMemberships,
   users,
 } from "@aitim/db";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { cache } from "react";
 import { getFolderRole, getListRole, getSpaceRole } from "@/lib/rbac";
 import type { SessionUserLike } from "../types";
@@ -27,7 +27,7 @@ export const getSpaceBySlug = cache(async (slug: string) => {
   const [space] = await db
     .select()
     .from(spaces)
-    .where(and(eq(spaces.slug, slug), eq(spaces.isArchived, false)));
+    .where(and(eq(spaces.slug, slug), eq(spaces.isArchived, false), isNull(spaces.deletedAt)));
   return space ?? null;
 });
 
@@ -35,7 +35,7 @@ export const getListsForSpace = cache(async (spaceId: string) => {
   return db
     .select()
     .from(lists)
-    .where(and(eq(lists.spaceId, spaceId), eq(lists.isArchived, false)))
+    .where(and(eq(lists.spaceId, spaceId), eq(lists.isArchived, false), isNull(lists.deletedAt)))
     .orderBy(asc(lists.position), asc(lists.createdAt));
 });
 
@@ -43,7 +43,7 @@ export const getFoldersForSpace = cache(async (spaceId: string) => {
   return db
     .select()
     .from(folders)
-    .where(and(eq(folders.spaceId, spaceId), eq(folders.isArchived, false)))
+    .where(and(eq(folders.spaceId, spaceId), eq(folders.isArchived, false), isNull(folders.deletedAt)))
     .orderBy(asc(folders.position), asc(folders.createdAt));
 });
 
@@ -81,12 +81,12 @@ export async function getSpaceContentTree(
     db
       .select()
       .from(folders)
-      .where(and(eq(folders.spaceId, spaceId), eq(folders.isArchived, false)))
+      .where(and(eq(folders.spaceId, spaceId), eq(folders.isArchived, false), isNull(folders.deletedAt)))
       .orderBy(asc(folders.position), asc(folders.createdAt)),
     db
       .select()
       .from(lists)
-      .where(and(eq(lists.spaceId, spaceId), eq(lists.isArchived, false)))
+      .where(and(eq(lists.spaceId, spaceId), eq(lists.isArchived, false), isNull(lists.deletedAt)))
       .orderBy(asc(lists.position), asc(lists.createdAt)),
   ]);
 
@@ -162,7 +162,7 @@ export async function getTaskNavTreeForUser(user: SessionUserLike) {
       color: spaces.color,
     })
     .from(spaces)
-    .where(eq(spaces.isArchived, false))
+    .where(and(eq(spaces.isArchived, false), isNull(spaces.deletedAt)))
     .orderBy(asc(spaces.name));
 
   const roles = await Promise.all(
@@ -188,6 +188,7 @@ export async function getTaskNavTreeForUser(user: SessionUserLike) {
       .where(
         and(
           eq(lists.isArchived, false),
+          isNull(lists.deletedAt),
           or(
             eq(listMembers.userId, user.id),
             groupIds.length > 0 ? inArray(listMembers.groupId, groupIds) : undefined,
@@ -201,6 +202,7 @@ export async function getTaskNavTreeForUser(user: SessionUserLike) {
       .where(
         and(
           eq(folders.isArchived, false),
+          isNull(folders.deletedAt),
           or(
             eq(folderMembers.userId, user.id),
             groupIds.length > 0 ? inArray(folderMembers.groupId, groupIds) : undefined,
@@ -236,7 +238,14 @@ export const getListBySlug = cache(async (spaceId: string, slug: string) => {
   const [list] = await db
     .select()
     .from(lists)
-    .where(and(eq(lists.spaceId, spaceId), eq(lists.slug, slug), eq(lists.isArchived, false)));
+    .where(
+      and(
+        eq(lists.spaceId, spaceId),
+        eq(lists.slug, slug),
+        eq(lists.isArchived, false),
+        isNull(lists.deletedAt),
+      ),
+    );
   return list ?? null;
 });
 
@@ -884,10 +893,132 @@ export async function getTaskAttachments(taskId: string) {
       mimeType: attachments.mimeType,
       sizeBytes: attachments.sizeBytes,
       createdAt: attachments.createdAt,
+      uploaderId: attachments.uploaderId,
       uploaderName: users.displayName,
     })
     .from(attachments)
     .leftJoin(users, eq(attachments.uploaderId, users.id))
     .where(eq(attachments.taskId, taskId))
     .orderBy(asc(attachments.createdAt));
+}
+
+export type TrashItemKind = "space" | "folder" | "list";
+
+export interface TrashItem {
+  kind: TrashItemKind;
+  id: string;
+  name: string;
+  deletedAt: Date;
+  spaceId: string;
+  spaceName: string;
+  spaceSlug: string;
+  /** Parent folder name when kind is list and still known. */
+  parentName: string | null;
+}
+
+/**
+ * Trashed spaces / folders / lists the user can manage (space owner or platform admin).
+ * Nested items deleted as part of a parent space/folder are still listed so they can be
+ * restored individually when the parent is still alive; when the parent space is trashed
+ * only the space row is shown (restoring the space restores children).
+ */
+export async function getTrashItemsForUser(user: SessionUserLike): Promise<TrashItem[]> {
+  const [spaceRows, folderRows, listRows] = await Promise.all([
+    db
+      .select({
+        id: spaces.id,
+        name: spaces.name,
+        slug: spaces.slug,
+        deletedAt: spaces.deletedAt,
+      })
+      .from(spaces)
+      .where(isNotNull(spaces.deletedAt)),
+    db
+      .select({
+        id: folders.id,
+        name: folders.name,
+        deletedAt: folders.deletedAt,
+        spaceId: folders.spaceId,
+        spaceName: spaces.name,
+        spaceSlug: spaces.slug,
+        spaceDeletedAt: spaces.deletedAt,
+      })
+      .from(folders)
+      .innerJoin(spaces, eq(folders.spaceId, spaces.id))
+      .where(isNotNull(folders.deletedAt)),
+    db
+      .select({
+        id: lists.id,
+        name: lists.name,
+        deletedAt: lists.deletedAt,
+        spaceId: lists.spaceId,
+        spaceName: spaces.name,
+        spaceSlug: spaces.slug,
+        spaceDeletedAt: spaces.deletedAt,
+        folderId: lists.folderId,
+        folderName: folders.name,
+        folderDeletedAt: folders.deletedAt,
+      })
+      .from(lists)
+      .innerJoin(spaces, eq(lists.spaceId, spaces.id))
+      .leftJoin(folders, eq(lists.folderId, folders.id))
+      .where(isNotNull(lists.deletedAt)),
+  ]);
+
+  const roles = await Promise.all(
+    [...new Set([...spaceRows.map((s) => s.id), ...folderRows.map((f) => f.spaceId), ...listRows.map((l) => l.spaceId)])].map(
+      async (spaceId) => [spaceId, await getSpaceRole(user.id, spaceId, user.platformRole)] as const,
+    ),
+  );
+  const canManage = new Set(roles.filter(([, r]) => r === "owner").map(([id]) => id));
+
+  const items: TrashItem[] = [];
+
+  for (const s of spaceRows) {
+    if (!canManage.has(s.id) || !s.deletedAt) continue;
+    items.push({
+      kind: "space",
+      id: s.id,
+      name: s.name,
+      deletedAt: s.deletedAt,
+      spaceId: s.id,
+      spaceName: s.name,
+      spaceSlug: s.slug,
+      parentName: null,
+    });
+  }
+
+  // Hide nested folder/list rows when their parent space is also trashed (restore space restores all).
+  for (const f of folderRows) {
+    if (!canManage.has(f.spaceId) || !f.deletedAt || f.spaceDeletedAt) continue;
+    items.push({
+      kind: "folder",
+      id: f.id,
+      name: f.name,
+      deletedAt: f.deletedAt,
+      spaceId: f.spaceId,
+      spaceName: f.spaceName,
+      spaceSlug: f.spaceSlug,
+      parentName: f.spaceName,
+    });
+  }
+
+  for (const l of listRows) {
+    if (!canManage.has(l.spaceId) || !l.deletedAt || l.spaceDeletedAt) continue;
+    // Hide lists that were trashed as part of a still-trashed parent folder.
+    if (l.folderId && l.folderDeletedAt) continue;
+    items.push({
+      kind: "list",
+      id: l.id,
+      name: l.name,
+      deletedAt: l.deletedAt,
+      spaceId: l.spaceId,
+      spaceName: l.spaceName,
+      spaceSlug: l.spaceSlug,
+      parentName: l.folderName ?? l.spaceName,
+    });
+  }
+
+  items.sort((a, b) => b.deletedAt.getTime() - a.deletedAt.getTime());
+  return items;
 }

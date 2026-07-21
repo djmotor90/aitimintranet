@@ -18,7 +18,6 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
-  Table,
   TableBody,
   TableCell,
   TableFooter,
@@ -206,6 +205,10 @@ function FieldContextMenu({
 const CELL_BTN =
   "block h-7 w-full truncate rounded-md px-1.5 text-left text-sm hover:bg-muted";
 
+/** Fixed row heights — virtualizer never measures (no ResizeObserver thrash). */
+const ROW_H = 37;
+const HEADER_H = 42;
+
 function fmtShortDate(value: string | Date | null | undefined): string {
   if (!value) return "—";
   const d = value instanceof Date ? value : new Date(value);
@@ -220,7 +223,7 @@ interface TaskRowProps {
   canEdit: boolean;
   statuses: StatusLike[];
   statusById: Map<string, StatusLike>;
-  fieldDefs: FieldDefLike[];
+  fieldDefsById: Map<string, FieldDefLike>;
   userNames: Map<string, string>;
   activeUsers: { id: string; displayName: string; photoKey: string | null }[];
   spaceTags: TagOption[];
@@ -235,7 +238,7 @@ const TaskRow = memo(function TaskRow({
   canEdit,
   statuses,
   statusById,
-  fieldDefs,
+  fieldDefsById,
   userNames,
   activeUsers,
   spaceTags,
@@ -577,7 +580,7 @@ const TaskRow = memo(function TaskRow({
       default:
         if (colId.startsWith("field-")) {
           const defId = colId.slice(6);
-          const def = fieldDefs.find((d) => d.id === defId);
+          const def = fieldDefsById.get(defId);
           if (!def) return null;
           if (editing) {
             return (
@@ -614,7 +617,13 @@ const TaskRow = memo(function TaskRow({
   }
 
   return (
-    <TableRow data-index={vIndex} className="h-[37px]">
+    // transition-none: row hover color transitions cause paint thrash mid-scroll.
+    // content-visibility: browser can skip off-buffer paint work for overscanned rows.
+    <TableRow
+      data-index={vIndex}
+      className="h-[37px] transition-none hover:bg-muted/40"
+      style={{ contentVisibility: "auto", containIntrinsicSize: `auto ${ROW_H}px` }}
+    >
       {orderedColumns.map((col) => renderCell(col.id))}
     </TableRow>
   );
@@ -979,6 +988,11 @@ export function TaskTable({
     setCtxMenu(null);
   }
 
+  const fieldDefsById = useMemo(
+    () => new Map(fieldDefs.map((d) => [d.id, d])),
+    [fieldDefs],
+  );
+
   function renderTaskRow(vIndex: number, item: TaskWithMeta) {
     return (
       <TaskRow
@@ -989,7 +1003,7 @@ export function TaskTable({
         canEdit={canEdit}
         statuses={statuses}
         statusById={statusById}
-        fieldDefs={fieldDefs}
+        fieldDefsById={fieldDefsById}
         userNames={userNames}
         activeUsers={activeUsers}
         spaceTags={spaceTags}
@@ -1091,19 +1105,55 @@ export function TaskTable({
   // once the element exists — a ref stays null through the first render and
   // the subscription would never attach.
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const tbodyRef = useRef<HTMLTableSectionElement | null>(null);
+
   const virtualizer = useVirtualizer({
     count: virtualCount,
     getScrollElement: () => scrollEl,
-    estimateSize: (i) => (resolveEntry(i).kind === "header" ? 42 : 37),
-    // Fixed row heights — no ResizeObserver thrash. Overscan keeps a buffer of
-    // cheap display-only rows ready so trackpad flings stay within pre-rendered
-    // content. Editors are not mounted per-row, so overscan is nearly free.
-    overscan: 12,
+    // Flat lists: constant size (no per-index work). Grouped: cheap header check.
+    estimateSize: (i) => {
+      if (!segmentRanges) return ROW_H;
+      return resolveEntry(i).kind === "header" ? HEADER_H : ROW_H;
+    },
+    // Larger overscan = fewer blank edges on a trackpad fling; rows are display-only
+    // so this is mostly free. Avoid going huge (DOM still costs).
+    overscan: 18,
+    getItemKey: (index) => {
+      const e = resolveEntry(index);
+      if (e.kind === "header") return `h:${e.seg.key}`;
+      if (e.kind === "calc") return `c:${e.seg.key}`;
+      return rowsByOffset.get(e.offset)?.task.id ?? `t:${e.offset}`;
+    },
   });
   const virtualRows = virtualizer.getVirtualItems();
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
   const paddingBottom =
     virtualRows.length > 0 ? virtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
+
+  // ── DOM-only scroll polish (no React re-render) ────────────────────────────
+  // While the finger/wheel is moving, disable pointer events on tbody so the
+  // browser skips hover/style thrash across rows (classic list-view trick).
+  // Does NOT swap cell content → no blink, no mass remount on settle.
+  useEffect(() => {
+    if (!scrollEl) return;
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const onScroll = () => {
+      const tb = tbodyRef.current;
+      if (tb && tb.style.pointerEvents !== "none") {
+        tb.style.pointerEvents = "none";
+      }
+      if (settle) clearTimeout(settle);
+      settle = setTimeout(() => {
+        if (tb) tb.style.pointerEvents = "";
+      }, 90);
+    };
+    scrollEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scrollEl.removeEventListener("scroll", onScroll);
+      if (settle) clearTimeout(settle);
+      if (tbodyRef.current) tbodyRef.current.style.pointerEvents = "";
+    };
+  }, [scrollEl]);
 
   // Fetch every page touching the visible window, plus one page ahead and one
   // behind (prefetch), so skeletons are rarely seen at normal scroll speeds.
@@ -1183,145 +1233,199 @@ export function TaskTable({
         </DropdownMenu>
       </div>
 
+      {/*
+        Single scroll container (no nested overflow-x wrapper from <Table>).
+        Nested scrollers force extra compositing and sticky-header jank.
+      */}
       <div
         ref={setScrollEl}
-        className="min-h-0 flex-1 overflow-auto overscroll-contain [contain:strict] [scrollbar-gutter:stable]"
-        style={{ WebkitOverflowScrolling: "touch" }}
+        className="min-h-0 flex-1 overflow-auto overscroll-contain [scrollbar-gutter:stable]"
+        style={{
+          WebkitOverflowScrolling: "touch",
+          // Hint the browser this surface is scroll-driven (compositor-friendly).
+          willChange: "scroll-position",
+        }}
       >
-      <Table className="table-fixed" style={{ width: totalWidth }}>
-        <colgroup>
-          {orderedColumns.map((col) => <col key={col.id} style={{ width: columnWidth(col) }} />)}
-        </colgroup>
-        <TableHeader className="sticky top-0 z-10 bg-background">
-          <TableRow>
-            {orderedColumns.map((col) => {
-              const isCustom = col.id.startsWith("field-");
-              const defId = isCustom ? col.id.slice(6) : null;
-              const isSorted = !!defId && sort?.fieldId === defId;
-              return (
-                <TableHead
-                  key={col.id}
-                  draggable
-                  onDragStart={(e) => onColDragStart(e, col.id)}
-                  onDragOver={(e) => onColDragOver(e, col.id)}
-                  onDrop={(e) => onColDrop(e, col.id)}
-                  onDragEnd={onColDragEnd}
-                  onContextMenu={isCustom && defId ? (e) => openCtxMenu(e, defId) : undefined}
-                  className={cn(
-                    "relative select-none pr-4 cursor-grab active:cursor-grabbing",
-                    dragOverColId === col.id && "bg-muted/60 border-l-2 border-l-primary",
-                    isSorted && "bg-muted/30",
-                  )}
-                >
-                  <span className="block truncate">
-                    {col.label}
-                    {isSorted && <span className="ml-1 text-xs text-muted-foreground">{sort!.dir === "asc" ? "↑" : "↓"}</span>}
-                  </span>
-                  <div
-                    role="separator"
-                    aria-label={`Resize ${col.label}`}
-                    aria-orientation="vertical"
-                    className="absolute top-0 right-0 h-full w-2 cursor-col-resize touch-none after:absolute after:top-2 after:right-1 after:h-[calc(100%-1rem)] after:w-px after:bg-transparent hover:after:bg-border"
-                    onPointerDown={(e) => { e.stopPropagation(); resizeColumn(col, e); }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setWidths((cur) => { const next = { ...cur }; delete next[col.id]; return next; });
-                    }}
-                  />
-                </TableHead>
-              );
-            })}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {virtualCount === 0 && (
-            <TableRow><TableCell colSpan={colSpan} className="text-muted-foreground">No tasks match.</TableCell></TableRow>
-          )}
-          {paddingTop > 0 && (
-            <tr aria-hidden style={{ height: paddingTop }}><td colSpan={colSpan} className="p-0" /></tr>
-          )}
-          {virtualRows.map((vRow) => {
-            const entry = resolveEntry(vRow.index);
-            if (entry.kind === "header") {
-              const seg = entry.seg;
-              const collapsed = collapsedGroups.has(seg.key);
-              return (
-                <TableRow
-                  key={`h-${seg.key}`}
-                  data-index={vRow.index}
-                  className="cursor-pointer bg-muted/40 hover:bg-muted/60"
-                  onClick={() => toggleGroup(seg.key)}
-                >
-                  <TableCell colSpan={colSpan} className="py-2">
-                    <div className="flex items-center gap-2">
-                      <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground transition-transform duration-150", !collapsed && "rotate-90")} />
-                      {seg.color && <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: seg.color }} />}
-                      <span className="text-sm font-semibold">{seg.label}</span>
-                      <Badge variant="secondary" className="h-5 px-1.5 text-xs">{seg.count}</Badge>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            }
-            if (entry.kind === "calc") {
-              const seg = entry.seg;
-              const segItems: TaskWithMeta[] = [];
-              for (let o = seg.startOffset; o < seg.startOffset + seg.count; o++) {
-                const it = rowsByOffset.get(o);
-                if (it) segItems.push(it);
-              }
-              return (
-                <TableRow
-                  key={`c-${seg.key}`}
-                  data-index={vRow.index}
-                  className="bg-muted/20 text-xs text-muted-foreground"
-                >
-                  {orderedColumns.map((col) => {
-                    if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
-                    const defId = col.id.slice(6);
-                    if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
-                    return <TableCell key={col.id} className="font-medium">{calcValue(defId, segItems)}</TableCell>;
-                  })}
-                </TableRow>
-              );
-            }
-            const item = rowsByOffset.get(entry.offset);
-            if (!item) {
-              // Skeleton placeholder — same height as a data row, filled in when its page lands.
-              return (
-                <TableRow
-                  key={`skeleton-${entry.offset}`}
-                  data-index={vRow.index}
-                  className="animate-pulse"
-                >
-                  {orderedColumns.map((col, i) => (
-                    <TableCell key={col.id} className="py-2.5">
-                      <div className="h-3 rounded bg-muted" style={{ width: i === 1 ? "80%" : "55%" }} />
-                    </TableCell>
-                  ))}
-                </TableRow>
-              );
-            }
-            return renderTaskRow(vRow.index, item);
-          })}
-          {paddingBottom > 0 && (
-            <tr aria-hidden style={{ height: paddingBottom }}><td colSpan={colSpan} className="p-0" /></tr>
-          )}
-        </TableBody>
-        {/* global calc footer (flat view) — computed over loaded rows */}
-        {!groupSegments && showCalcFooter && (
-          <TableFooter>
-            <TableRow className="bg-muted/20 text-xs text-muted-foreground">
+        <table
+          className="w-full caption-bottom table-fixed border-collapse text-sm"
+          style={{ width: totalWidth }}
+        >
+          <colgroup>
+            {orderedColumns.map((col) => (
+              <col key={col.id} style={{ width: columnWidth(col) }} />
+            ))}
+          </colgroup>
+          <TableHeader className="sticky top-0 z-10 border-b border-border bg-background">
+            <TableRow className="transition-none hover:bg-transparent">
               {orderedColumns.map((col) => {
-                if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
-                const defId = col.id.slice(6);
-                if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
-                return <TableCell key={col.id} className="font-medium">{calcValue(defId, loadedItems)}</TableCell>;
+                const isCustom = col.id.startsWith("field-");
+                const defId = isCustom ? col.id.slice(6) : null;
+                const isSorted = !!defId && sort?.fieldId === defId;
+                return (
+                  <TableHead
+                    key={col.id}
+                    draggable
+                    onDragStart={(e) => onColDragStart(e, col.id)}
+                    onDragOver={(e) => onColDragOver(e, col.id)}
+                    onDrop={(e) => onColDrop(e, col.id)}
+                    onDragEnd={onColDragEnd}
+                    onContextMenu={isCustom && defId ? (e) => openCtxMenu(e, defId) : undefined}
+                    className={cn(
+                      "relative cursor-grab select-none pr-4 active:cursor-grabbing",
+                      dragOverColId === col.id && "border-l-2 border-l-primary bg-muted/60",
+                      isSorted && "bg-muted/30",
+                    )}
+                  >
+                    <span className="block truncate">
+                      {col.label}
+                      {isSorted && (
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          {sort!.dir === "asc" ? "↑" : "↓"}
+                        </span>
+                      )}
+                    </span>
+                    <div
+                      role="separator"
+                      aria-label={`Resize ${col.label}`}
+                      aria-orientation="vertical"
+                      className="absolute top-0 right-0 h-full w-2 cursor-col-resize touch-none after:absolute after:top-2 after:right-1 after:h-[calc(100%-1rem)] after:w-px after:bg-transparent hover:after:bg-border"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        resizeColumn(col, e);
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setWidths((cur) => {
+                          const next = { ...cur };
+                          delete next[col.id];
+                          return next;
+                        });
+                      }}
+                    />
+                  </TableHead>
+                );
               })}
             </TableRow>
-          </TableFooter>
-        )}
-      </Table>
+          </TableHeader>
+          <TableBody ref={tbodyRef}>
+            {virtualCount === 0 && (
+              <TableRow className="transition-none hover:bg-transparent">
+                <TableCell colSpan={colSpan} className="text-muted-foreground">
+                  No tasks match.
+                </TableCell>
+              </TableRow>
+            )}
+            {paddingTop > 0 && (
+              <tr aria-hidden style={{ height: paddingTop }}>
+                <td colSpan={colSpan} className="p-0" />
+              </tr>
+            )}
+            {virtualRows.map((vRow) => {
+              const entry = resolveEntry(vRow.index);
+              if (entry.kind === "header") {
+                const seg = entry.seg;
+                const collapsed = collapsedGroups.has(seg.key);
+                return (
+                  <TableRow
+                    key={`h-${seg.key}`}
+                    data-index={vRow.index}
+                    className="cursor-pointer bg-muted/40 transition-none hover:bg-muted/60"
+                    onClick={() => toggleGroup(seg.key)}
+                  >
+                    <TableCell colSpan={colSpan} className="py-2">
+                      <div className="flex items-center gap-2">
+                        <ChevronRight
+                          className={cn(
+                            "size-4 shrink-0 text-muted-foreground",
+                            !collapsed && "rotate-90",
+                          )}
+                        />
+                        {seg.color && (
+                          <span
+                            className="size-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: seg.color }}
+                          />
+                        )}
+                        <span className="text-sm font-semibold">{seg.label}</span>
+                        <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+                          {seg.count}
+                        </Badge>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+              if (entry.kind === "calc") {
+                const seg = entry.seg;
+                const segItems: TaskWithMeta[] = [];
+                for (let o = seg.startOffset; o < seg.startOffset + seg.count; o++) {
+                  const it = rowsByOffset.get(o);
+                  if (it) segItems.push(it);
+                }
+                return (
+                  <TableRow
+                    key={`c-${seg.key}`}
+                    data-index={vRow.index}
+                    className="bg-muted/20 text-xs text-muted-foreground transition-none hover:bg-muted/20"
+                  >
+                    {orderedColumns.map((col) => {
+                      if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
+                      const defId = col.id.slice(6);
+                      if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
+                      return (
+                        <TableCell key={col.id} className="font-medium">
+                          {calcValue(defId, segItems)}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                );
+              }
+              const item = rowsByOffset.get(entry.offset);
+              if (!item) {
+                // Static skeleton — no animate-pulse (CSS animation mid-scroll is costly).
+                return (
+                  <TableRow
+                    key={`skeleton-${entry.offset}`}
+                    data-index={vRow.index}
+                    className="h-[37px] transition-none hover:bg-transparent"
+                  >
+                    {orderedColumns.map((col, i) => (
+                      <TableCell key={col.id} className="py-2.5">
+                        <div
+                          className="h-3 rounded bg-muted/70"
+                          style={{ width: i === 1 ? "80%" : "55%" }}
+                        />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                );
+              }
+              return renderTaskRow(vRow.index, item);
+            })}
+            {paddingBottom > 0 && (
+              <tr aria-hidden style={{ height: paddingBottom }}>
+                <td colSpan={colSpan} className="p-0" />
+              </tr>
+            )}
+          </TableBody>
+          {!groupSegments && showCalcFooter && (
+            <TableFooter>
+              <TableRow className="bg-muted/20 text-xs text-muted-foreground transition-none hover:bg-muted/20">
+                {orderedColumns.map((col) => {
+                  if (!col.id.startsWith("field-")) return <TableCell key={col.id} />;
+                  const defId = col.id.slice(6);
+                  if (!calcFieldIds.has(defId)) return <TableCell key={col.id} />;
+                  return (
+                    <TableCell key={col.id} className="font-medium">
+                      {calcValue(defId, loadedItems)}
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            </TableFooter>
+          )}
+        </table>
       </div>
 
       {/* context menu */}

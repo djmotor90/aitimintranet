@@ -7,16 +7,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { getListRole, requireUser } from "@/lib/rbac";
 import { archiveTask, updateTaskCore } from "@/modules/tasks/actions";
 import { ActivityPanel } from "@/modules/tasks/components/activity-panel";
+import { AttachmentList } from "@/modules/tasks/components/attachment-list";
 import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
 import { AssigneeSelect } from "@/modules/tasks/components/assignee-select";
 import { CustomFieldInput } from "@/modules/tasks/components/custom-field-input";
 import { TagPicker } from "@/modules/tasks/components/tag-picker";
 import { TaskDetailShell } from "@/modules/tasks/components/task-detail-shell";
+import { RichTextViewer } from "@/components/editor/rich-text-editor";
+import type { StoredRichDoc } from "@/components/editor/doc-utils";
+import { TaskDescriptionEditor } from "@/modules/tasks/components/task-description-editor";
 import { defaultLayout, type TaskLayout } from "@/modules/tasks/layout-types";
 import {
   getActiveUsers,
@@ -30,12 +33,6 @@ import {
   getTaskComments,
   getUsersWithListAccess,
 } from "@/modules/tasks/queries";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
 
 export default async function TaskDetailPage(props: { params: Promise<{ number: string }> }) {
   const { number } = await props.params;
@@ -54,6 +51,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   const role = await getListRole(user.id, list.id, user.platformRole);
   if (!role) notFound();
   const canEdit = role === "owner" || role === "member";
+  const isPlatformAdmin = user.platformRole === "admin";
 
   const [
     listStatuses,
@@ -84,7 +82,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
     .innerJoin(users, eq(ta.userId, users.id))
     .where(eq(ta.taskId, task.id));
   const cf = (task.customFields ?? {}) as Record<string, unknown>;
-  const description = (task.description as { text?: string } | null)?.text ?? "";
+  const description = task.description as StoredRichDoc;
   const savedLayout = list.taskLayout as TaskLayout | null;
   const layout = savedLayout ?? defaultLayout(fieldDefs);
 
@@ -96,6 +94,8 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
           mentionableUsers={mentionableUsers}
           activity={activity}
           comments={taskComments}
+          currentUserId={user.id}
+          canModerateComments={isPlatformAdmin}
         />
       }
     >
@@ -262,15 +262,18 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                     </div>
                   );
                   if (fieldId === "description") return (
-                    <div key="description" className="flex flex-col gap-1.5">
-                      <Label htmlFor="description">Description</Label>
-                      <Textarea
-                        id="description"
-                        name="description"
-                        rows={4}
-                        defaultValue={description}
-                        disabled={!canEdit}
-                      />
+                    <div key="description" className="flex flex-col gap-1.5 sm:col-span-2">
+                      <Label>Description</Label>
+                      {canEdit ? (
+                        <TaskDescriptionEditor
+                          taskId={task.id}
+                          initialContent={description}
+                        />
+                      ) : (
+                        <div className="rounded-lg px-1 py-1">
+                          <RichTextViewer content={description} />
+                        </div>
+                      )}
                     </div>
                   );
                   if (fieldId.startsWith("cf_")) {
@@ -301,29 +304,19 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
         </form>
 
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between border-b border-border">
-            <CardTitle className="text-base">Attachments ({taskAttachments.length})</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border">
+            <CardTitle className="text-base">
+              Attachments ({taskAttachments.length})
+            </CardTitle>
             {canEdit && <AttachmentUpload taskId={task.id} />}
           </CardHeader>
           <CardContent>
-            <ul className="flex flex-col gap-2">
-              {taskAttachments.map((a) => (
-                <li
-                  key={a.id}
-                  className="box-border flex items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-sm"
-                >
-                  <a href={`/api/attachments/${a.id}`} className="min-w-0 flex-1 truncate font-medium text-primary hover:underline">
-                    {a.fileName}
-                  </a>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatBytes(a.sizeBytes)} · {a.uploaderName ?? "—"}
-                  </span>
-                </li>
-              ))}
-              {taskAttachments.length === 0 && (
-                <li className="text-sm text-muted-foreground">No attachments.</li>
-              )}
-            </ul>
+            <AttachmentList
+              attachments={taskAttachments}
+              currentUserId={user.id}
+              canEdit={canEdit}
+              isPlatformAdmin={isPlatformAdmin}
+            />
           </CardContent>
         </Card>
 

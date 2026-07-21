@@ -362,7 +362,12 @@ export function SidebarNav({
                           ) : (
                             <span className="size-5 shrink-0" aria-hidden />
                           )}
-                          <SpaceNavContextMenu spaceId={space.id} isOwner={space.isOwner}>
+                          <SpaceNavContextMenu
+                            spaceId={space.id}
+                            spaceName={space.name}
+                            spaceSlug={space.slug}
+                            isOwner={space.isOwner}
+                          >
                             <SpaceDropRow
                               space={space}
                               spaceHref={spaceHref}

@@ -65,6 +65,8 @@ export const spaces = pgTable(
     icon: text("icon"),
     color: text("color"),
     isArchived: boolean("is_archived").notNull().default(false),
+    /** Soft-deleted to Trash; null = not in trash. Restorable until permanently deleted. */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdBy: uuid("created_by").references(() => users.id),
     ...timestamps,
   },
@@ -114,6 +116,8 @@ export const folders = pgTable(
     slug: text("slug").notNull(),
     position: text("position").notNull().default("a0"),
     isArchived: boolean("is_archived").notNull().default(false),
+    /** Soft-deleted to Trash; null = not in trash. Restorable until permanently deleted. */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     /** When true, space (and parent-folder) membership does not grant access — only direct folderMembers rows do. */
     isPrivate: boolean("is_private").notNull().default(false),
     createdBy: uuid("created_by").references(() => users.id),
@@ -163,6 +167,8 @@ export const lists = pgTable(
     position: text("position").notNull().default("a0"),
     defaultStatusId: uuid("default_status_id"),
     isArchived: boolean("is_archived").notNull().default(false),
+    /** Soft-deleted to Trash; null = not in trash. Restorable until permanently deleted. */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     taskLayout: jsonb("task_layout"),
     tableColumnOrder: jsonb("table_column_order"),
     /** Persisted default view: "table" | "board" */

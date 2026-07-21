@@ -1,23 +1,13 @@
 "use client";
 
-import { AtSign, X } from "lucide-react";
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useTransition,
-  type KeyboardEvent,
-} from "react";
-import { Badge } from "@/components/ui/badge";
+import type { JSONContent } from "@tiptap/react";
+import { AtSign } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { extractMentionIds } from "@/components/editor/mention-extension";
+import { RichTextEditor } from "@/components/editor/rich-text-editor";
+import { isDocEmpty } from "@/components/editor/doc-utils";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { addComment } from "../actions";
 
@@ -27,20 +17,9 @@ interface UserOption {
   photoKey?: string | null;
 }
 
-/** Find an active @query just before the cursor (e.g. "@sa" or "@"). */
-function getAtQuery(text: string, caret: number): { start: number; query: string } | null {
-  const before = text.slice(0, caret);
-  // Match last @ that is start-of-string or preceded by whitespace, then non-space chars.
-  const match = before.match(/(^|[\s([{])@([^\s@]*)$/);
-  if (!match) return null;
-  const query = match[2] ?? "";
-  const start = before.length - query.length - 1; // index of @
-  return { start, query };
-}
-
 /**
- * Activity comment box with @-mentions. Only users with permission on the task
- * (list access) are offered — never the full directory.
+ * Comment composer with TipTap: `/` slash commands + `@` mentions
+ * (only users who have access to this task's list).
  */
 export function CommentBox({
   taskId,
@@ -50,209 +29,118 @@ export function CommentBox({
   autoFocus,
 }: {
   taskId: string;
-  /** Mentionable users — must already be filtered to those with list access. */
+  /** Mentionable users — people with list access only. */
   users: UserOption[];
-  /** When set, posts as a reply in that thread. */
   parentCommentId?: string | null;
   placeholder?: string;
   autoFocus?: boolean;
 }) {
-  const [body, setBody] = useState("");
-  const [mentions, setMentions] = useState<UserOption[]>([]);
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  const [caret, setCaret] = useState(0);
-  const [mentionOpen, setMentionOpen] = useState(false);
-  const [highlight, setHighlight] = useState(0);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  const atQuery = useMemo(() => getAtQuery(body, caret), [body, caret]);
-
-  const filtered = useMemo(() => {
-    if (!atQuery) return [];
-    const q = atQuery.query.toLowerCase();
-    return users
-      .filter((u) => !mentions.some((m) => m.id === u.id))
-      .filter((u) => !q || u.displayName.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [atQuery, users, mentions]);
-
+  const [empty, setEmpty] = useState(true);
+  const [editorKey, setEditorKey] = useState(0);
+  const [payload, setPayload] = useState<{
+    text: string;
+    doc: JSONContent;
+  } | null>(null);
+  // After mount we allow the real empty/pending logic. SSR + first client paint
+  // stay identical so TipTap-related state never flips attributes during hydrate.
+  const [ready, setReady] = useState(false);
   useEffect(() => {
-    if (atQuery && filtered.length > 0) {
-      setMentionOpen(true);
-      setHighlight(0);
-    } else {
-      setMentionOpen(false);
-    }
-  }, [atQuery, filtered.length]);
+    setReady(true);
+  }, []);
 
-  const available = users.filter((u) => !mentions.some((m) => m.id === u.id));
+  const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
 
-  function syncCaret(el: HTMLTextAreaElement) {
-    setCaret(el.selectionStart ?? el.value.length);
-  }
+  const mentionedUsers = useMemo(() => {
+    if (!payload?.doc) return [];
+    return extractMentionIds(payload.doc)
+      .map((id) => userById.get(id))
+      .filter((u): u is UserOption => Boolean(u));
+  }, [payload, userById]);
 
-  function insertMention(user: UserOption) {
-    const el = textareaRef.current;
-    const currentCaret = el?.selectionStart ?? caret;
-    const found = getAtQuery(body, currentCaret);
-    const insertText = `@${user.displayName} `;
+  const submitLabel = parentCommentId ? "Reply" : "Comment";
+  const canSubmit =
+    ready && !pending && !empty && Boolean(payload && !isDocEmpty(payload.doc));
 
-    let nextBody: string;
-    let nextCaret: number;
-    if (found) {
-      nextBody = body.slice(0, found.start) + insertText + body.slice(currentCaret);
-      nextCaret = found.start + insertText.length;
-    } else {
-      // Triggered from the Mention button — append.
-      const needsSpace = body.length > 0 && !/\s$/.test(body);
-      nextBody = body + (needsSpace ? " " : "") + insertText;
-      nextCaret = nextBody.length;
-    }
-
-    setBody(nextBody);
-    setMentions((prev) => (prev.some((m) => m.id === user.id) ? prev : [...prev, user]));
-    setMentionOpen(false);
-    setCaret(nextCaret);
-
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (!ta) return;
-      ta.focus();
-      ta.setSelectionRange(nextCaret, nextCaret);
-    });
-  }
-
-  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (!mentionOpen || filtered.length === 0) return;
-
-    if (e.key === "ArrowDown") {
+  const onSubmit = useCallback(
+    (e: React.FormEvent) => {
       e.preventDefault();
-      setHighlight((h) => (h + 1) % filtered.length);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlight((h) => (h - 1 + filtered.length) % filtered.length);
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      insertMention(filtered[highlight] ?? filtered[0]);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setMentionOpen(false);
-    }
-  }
+      setError(null);
+      if (!canSubmit || !payload || isDocEmpty(payload.doc)) {
+        if (ready) setError("Write something first");
+        return;
+      }
+      const formData = new FormData();
+      formData.set("taskId", taskId);
+      if (parentCommentId) formData.set("parentCommentId", parentCommentId);
+      formData.set("body", JSON.stringify(payload));
+      for (const id of extractMentionIds(payload.doc)) {
+        formData.append("mentions", id);
+      }
+      startTransition(async () => {
+        try {
+          await addComment(formData);
+          setPayload(null);
+          setEmpty(true);
+          setEditorKey((k) => k + 1);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Failed to comment");
+        }
+      });
+    },
+    [canSubmit, payload, ready, taskId, parentCommentId],
+  );
 
   return (
-    <form
-      className="flex flex-col gap-2"
-      action={(formData) => {
-        setError(null);
-        startTransition(async () => {
-          try {
-            await addComment(formData);
-            setBody("");
-            setMentions([]);
-            setMentionOpen(false);
-          } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to comment");
-          }
-        });
-      }}
-    >
-      <input type="hidden" name="taskId" value={taskId} />
-      {parentCommentId && (
-        <input type="hidden" name="parentCommentId" value={parentCommentId} />
-      )}
-      {mentions.map((m) => (
-        <input key={m.id} type="hidden" name="mentions" value={m.id} />
-      ))}
+    <form className="flex flex-col gap-2" onSubmit={onSubmit}>
+      <RichTextEditor
+        key={editorKey}
+        variant="compact"
+        autoFocus={autoFocus}
+        taskId={taskId}
+        mentionUsers={users}
+        onFilesUploaded={() => router.refresh()}
+        placeholder={
+          placeholder ??
+          "Write a comment… attach files, paste screenshots, @ mention, / blocks"
+        }
+        onChange={({ text, doc, empty: isEmpty }) => {
+          setEmpty(isEmpty);
+          setPayload({ text, doc });
+        }}
+      />
 
-      <div className="relative">
-        <Textarea
-          ref={textareaRef}
-          name="body"
-          rows={3}
-          autoFocus={autoFocus}
-          placeholder={placeholder ?? "Write a comment… Use @ to mention someone"}
-          value={body}
-          onChange={(e) => {
-            setBody(e.target.value);
-            syncCaret(e.target);
-          }}
-          onClick={(e) => syncCaret(e.currentTarget)}
-          onKeyUp={(e) => syncCaret(e.currentTarget)}
-          onSelect={(e) => syncCaret(e.currentTarget)}
-          onKeyDown={onKeyDown}
-          required
-        />
-
-        {mentionOpen && filtered.length > 0 && (
-          <div
-            ref={listRef}
-            role="listbox"
-            className="absolute bottom-full left-0 z-50 mb-1 max-h-52 w-full max-w-sm overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
-          >
-            <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              People with access
-            </p>
-            {filtered.map((u, i) => (
-              <button
-                key={u.id}
-                type="button"
-                role="option"
-                aria-selected={i === highlight}
-                onMouseDown={(e) => {
-                  // prevent textarea blur before click
-                  e.preventDefault();
-                  insertMention(u);
-                }}
-                onMouseEnter={() => setHighlight(i)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm",
-                  i === highlight ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-                )}
-              >
-                <AtSign className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate">{u.displayName}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" size="sm">
-              <AtSign className="size-4" /> Mention
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent className="max-h-64 overflow-y-auto">
-            {available.map((u) => (
-              <DropdownMenuItem key={u.id} onSelect={() => insertMention(u)}>
-                {u.displayName}
-              </DropdownMenuItem>
-            ))}
-            {available.length === 0 && (
-              <DropdownMenuItem disabled>
-                {users.length === 0 ? "No one else has access" : "Everyone mentioned"}
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {mentions.map((m) => (
-          <Badge key={m.id} variant="secondary" className="gap-1">
-            @{m.displayName}
-            <button
-              type="button"
-              onClick={() => setMentions((prev) => prev.filter((x) => x.id !== m.id))}
+      {mentionedUsers.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <AtSign className="size-3.5 text-muted-foreground" />
+          {mentionedUsers.map((u) => (
+            <span
+              key={u.id}
+              className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
             >
-              <X className="size-3" />
-            </button>
-          </Badge>
-        ))}
-        <Button type="submit" size="sm" className="ml-auto" disabled={pending || !body.trim()}>
-          {pending ? "Posting…" : "Comment"}
+              {u.displayName}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2">
+        {/*
+          Do not use the HTML `disabled` attribute here. React 19 SSR often
+          emits disabled={null} while the client expects disabled={true}, which
+          causes a hydration mismatch on this button. Guard submit in onSubmit
+          and mirror the disabled look with aria-disabled + CSS.
+        */}
+        <Button
+          type="submit"
+          size="sm"
+          aria-disabled={!canSubmit}
+          className={cn(!canSubmit && "pointer-events-none opacity-50")}
+          tabIndex={canSubmit ? 0 : -1}
+        >
+          {pending ? "Posting…" : submitLabel}
         </Button>
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}

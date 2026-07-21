@@ -27,11 +27,17 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       BUCKETS.attachments,
       row.attachment.objectKey,
     );
+    const mime = contentType ?? row.attachment.mimeType;
+    const isImage = mime.startsWith("image/");
+    // Inline so pasted screenshots render in the editor / comments.
+    const disposition = isImage
+      ? `inline; filename="${encodeURIComponent(row.attachment.fileName)}"`
+      : `attachment; filename="${encodeURIComponent(row.attachment.fileName)}"`;
     return new NextResponse(body as unknown as ReadableStream, {
       headers: {
-        "Content-Type": contentType ?? row.attachment.mimeType,
+        "Content-Type": mime,
         "Content-Length": String(length ?? row.attachment.sizeBytes),
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(row.attachment.fileName)}"`,
+        "Content-Disposition": disposition,
         "Cache-Control": "private, max-age=3600",
       },
     });

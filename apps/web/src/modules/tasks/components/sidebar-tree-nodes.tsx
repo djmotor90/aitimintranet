@@ -44,7 +44,13 @@ export function ListRow({
   const listActive = pathname === listHref || pathname.startsWith(`${listHref}/`);
 
   return (
-    <ListNavContextMenu spaceSlug={spaceSlug} listSlug={list.slug} canManage={canManage}>
+    <ListNavContextMenu
+      listId={list.id}
+      listName={list.name}
+      spaceSlug={spaceSlug}
+      listSlug={list.slug}
+      canManage={canManage}
+    >
       <Link
         ref={setNodeRef}
         href={listHref}
@@ -123,7 +129,9 @@ export function FolderRow({
 
         <FolderNavContextMenu
           folderId={node.id}
+          folderName={node.name}
           spaceId={spaceId}
+          spaceSlug={spaceSlug}
           isPrivate={node.isPrivate}
           canManage={canManage}
         >
