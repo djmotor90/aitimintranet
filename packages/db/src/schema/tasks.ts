@@ -364,13 +364,21 @@ export const comments = pgTable(
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id),
+    /**
+     * Null = root comment on the main activity feed.
+     * Set = reply in a thread; always points at the thread root (one-level threads).
+     */
+    parentCommentId: uuid("parent_comment_id"),
     /** Tiptap document JSON; mentions stored as nodes with userId attrs */
     body: jsonb("body").notNull(),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     ...timestamps,
   },
-  (t) => [index("comments_task_idx").on(t.taskId)],
+  (t) => [
+    index("comments_task_idx").on(t.taskId),
+    index("comments_parent_idx").on(t.parentCommentId),
+  ],
 );
 
 export const commentMentions = pgTable(
@@ -527,6 +535,12 @@ export const statusesRelations = relations(statuses, ({ one }) => ({
 export const commentsRelations = relations(comments, ({ one, many }) => ({
   task: one(tasks, { fields: [comments.taskId], references: [tasks.id] }),
   author: one(users, { fields: [comments.authorId], references: [users.id] }),
+  parent: one(comments, {
+    fields: [comments.parentCommentId],
+    references: [comments.id],
+    relationName: "comment_thread",
+  }),
+  replies: many(comments, { relationName: "comment_thread" }),
   mentions: many(commentMentions),
 }));
 

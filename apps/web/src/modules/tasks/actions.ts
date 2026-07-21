@@ -1454,6 +1454,8 @@ export async function addComment(formData: FormData) {
   const taskId = z.string().uuid().parse(formData.get("taskId"));
   const body = z.string().min(1).max(10_000).parse(formData.get("body"));
   const rawMentionIds = formData.getAll("mentions").map((v) => z.string().uuid().parse(v));
+  const parentRaw = formData.get("parentCommentId")?.toString();
+  const parentInput = parentRaw ? z.string().uuid().parse(parentRaw) : null;
 
   const { task, list, space } = await requireTask(taskId);
   const user = await requireUser();
@@ -1467,10 +1469,30 @@ export async function addComment(formData: FormData) {
 
   const { comments, commentMentions } = await import("@aitim/db");
 
+  // Flatten threads: replies always hang off the root comment (Slack-style).
+  let parentCommentId: string | null = null;
+  if (parentInput) {
+    const [parent] = await db
+      .select({
+        id: comments.id,
+        taskId: comments.taskId,
+        parentCommentId: comments.parentCommentId,
+      })
+      .from(comments)
+      .where(eq(comments.id, parentInput));
+    if (!parent || parent.taskId !== taskId) throw new Error("Parent comment not found");
+    parentCommentId = parent.parentCommentId ?? parent.id;
+  }
+
   await db.transaction(async (tx) => {
     const [comment] = await tx
       .insert(comments)
-      .values({ taskId, authorId: user.id, body: { text: body } })
+      .values({
+        taskId,
+        authorId: user.id,
+        parentCommentId,
+        body: { text: body },
+      })
       .returning();
     if (mentionIds.length > 0) {
       await tx
@@ -1482,8 +1504,12 @@ export async function addComment(formData: FormData) {
       spaceId: space.id,
       taskId,
       actorId: user.id,
-      verb: "comment.created",
-      payload: { preview: body.slice(0, 140) },
+      verb: parentCommentId ? "comment.replied" : "comment.created",
+      payload: {
+        preview: body.slice(0, 140),
+        parentCommentId,
+        commentId: comment.id,
+      },
     });
   });
 
@@ -1505,7 +1531,7 @@ export async function addComment(formData: FormData) {
     type: "comment",
     taskId,
     actorId: user.id,
-    payload: { preview, number: task.number },
+    payload: { preview, number: task.number, threaded: !!parentCommentId },
   });
   await notifyUsers({
     recipientIds: mentionIds,

@@ -1,22 +1,19 @@
 import { db, lists, spaces, users } from "@aitim/db";
 import { eq } from "drizzle-orm";
-import { FileText } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { initials, UserAvatar } from "@/components/shell/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { getListRole, requireUser } from "@/lib/rbac";
 import { archiveTask, updateTaskCore } from "@/modules/tasks/actions";
+import { ActivityPanel } from "@/modules/tasks/components/activity-panel";
 import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
 import { AssigneeSelect } from "@/modules/tasks/components/assignee-select";
-import { CommentBox } from "@/modules/tasks/components/comment-box";
 import { CustomFieldInput } from "@/modules/tasks/components/custom-field-input";
 import { TagPicker } from "@/modules/tasks/components/tag-picker";
 import { TaskDetailShell } from "@/modules/tasks/components/task-detail-shell";
@@ -38,57 +35,6 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatActivityTime(date: Date): string {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })
-    .format(date)
-    .replace(",", " at");
-}
-
-function describeActivity(a: {
-  verb: string;
-  payload: unknown;
-  actorId: string | null;
-  actorName: string | null;
-  actorLabel: string | null;
-  actorPhotoKey: string | null;
-}): string {
-  const p = (a.payload ?? {}) as Record<string, unknown>;
-  const who = a.actorName ?? a.actorLabel ?? "System";
-  switch (a.verb) {
-    case "task.created":
-      return `${who} created the task`;
-    case "task.status_changed":
-      return `${who} changed status: ${p.from ?? "?"} → ${p.to ?? "?"}`;
-    case "task.title_changed":
-      return `${who} renamed the task`;
-    case "task.priority_changed":
-      return `${who} set priority to ${p.to ?? "none"}`;
-    case "task.due_date_changed":
-      return `${who} set due date to ${p.to ?? "none"}`;
-    case "task.assignee_added":
-      return `${who} added an assignee`;
-    case "task.assignee_removed":
-      return `${who} removed an assignee`;
-    case "task.tag_added":
-      return `${who} added tag ${p.name ?? "?"}`;
-    case "task.tag_removed":
-      return `${who} removed tag ${p.name ?? "?"}`;
-    case "task.field_changed":
-      return `${who} changed ${p.field}: ${JSON.stringify(p.from)} → ${JSON.stringify(p.to)}`;
-    case "attachment.added":
-      return `${who} added attachment`;
-    case "task.archived":
-      return `${who} archived the task`;
-    default:
-      return `${who} · ${a.verb}`;
-  }
 }
 
 export default async function TaskDetailPage(props: { params: Promise<{ number: string }> }) {
@@ -141,93 +87,16 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   const description = (task.description as { text?: string } | null)?.text ?? "";
   const savedLayout = list.taskLayout as TaskLayout | null;
   const layout = savedLayout ?? defaultLayout(fieldDefs);
-  const timelineItems = [
-    ...activity
-      .filter((a) => a.verb !== "comment.created")
-      .map((a) => ({ id: `activity-${a.id}`, type: "activity" as const, createdAt: a.createdAt, activity: a })),
-    ...taskComments.map((c) => ({
-      id: `comment-${c.id}`,
-      type: "comment" as const,
-      createdAt: c.createdAt,
-      comment: c,
-    })),
-  ].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
   return (
     <TaskDetailShell
       activity={
-        <>
-          <ul className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-            {timelineItems.map((item) => (
-              <li key={item.id} className="border-b py-4 first:pt-0 last:border-b-0">
-                {item.type === "comment" ? (
-                  <div className="flex gap-3">
-                    <UserAvatar
-                      userId={item.comment.authorId}
-                      name={item.comment.authorName}
-                      hasPhoto={!!item.comment.authorPhotoKey}
-                      className="size-7"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">
-                        {item.comment.authorName}{" "}
-                        <span className="font-normal text-muted-foreground">commented</span>
-                      </div>
-                      <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-                        {(item.comment.body as { text?: string })?.text ?? ""}
-                      </p>
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        {formatActivityTime(item.comment.createdAt)}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex gap-3">
-                    {item.activity.actorId ? (
-                      <UserAvatar
-                        userId={item.activity.actorId}
-                        name={item.activity.actorName ?? item.activity.actorLabel ?? "System"}
-                        hasPhoto={!!item.activity.actorPhotoKey}
-                        className="size-7"
-                      />
-                    ) : (
-                      <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-medium text-primary-foreground">
-                        {initials(item.activity.actorName ?? item.activity.actorLabel ?? "System")}
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm text-muted-foreground">
-                        {describeActivity(item.activity)}
-                      </div>
-                      {item.activity.verb === "attachment.added" && (
-                        <div className="mt-3 flex items-center gap-3 rounded-lg border p-3">
-                          <FileText className="size-5 shrink-0 text-destructive" />
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">
-                              {String(
-                                ((item.activity.payload ?? {}) as Record<string, unknown>).fileName ??
-                                  "Attachment",
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        {formatActivityTime(item.activity.createdAt)}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </li>
-            ))}
-            {timelineItems.length === 0 && (
-              <li className="text-sm text-muted-foreground">No activity yet.</li>
-            )}
-          </ul>
-          <div className="rounded-xl border bg-card p-3">
-            <CommentBox taskId={task.id} users={mentionableUsers} />
-          </div>
-        </>
+        <ActivityPanel
+          taskId={task.id}
+          mentionableUsers={mentionableUsers}
+          activity={activity}
+          comments={taskComments}
+        />
       }
     >
       <div className="flex flex-col gap-4">
@@ -283,8 +152,8 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
             <div
               key={group.id}
               className={cn(
-                "flex flex-col gap-3 p-4",
-                showBorder && "rounded-lg border",
+                "box-border flex flex-col gap-3 p-4",
+                showBorder && "rounded-lg border border-border bg-card shadow-sm",
               )}
             >
               {group.label && (
@@ -432,18 +301,21 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
         </form>
 
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-row items-center justify-between border-b border-border">
             <CardTitle className="text-base">Attachments ({taskAttachments.length})</CardTitle>
             {canEdit && <AttachmentUpload taskId={task.id} />}
           </CardHeader>
           <CardContent>
             <ul className="flex flex-col gap-2">
               {taskAttachments.map((a) => (
-                <li key={a.id} className="flex items-center gap-2 text-sm">
-                  <a href={`/api/attachments/${a.id}`} className="font-medium text-primary hover:underline">
+                <li
+                  key={a.id}
+                  className="box-border flex items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-sm"
+                >
+                  <a href={`/api/attachments/${a.id}`} className="min-w-0 flex-1 truncate font-medium text-primary hover:underline">
                     {a.fileName}
                   </a>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {formatBytes(a.sizeBytes)} · {a.uploaderName ?? "—"}
                   </span>
                 </li>

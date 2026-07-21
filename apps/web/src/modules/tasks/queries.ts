@@ -1,5 +1,6 @@
 import {
   activityLog,
+  attachments,
   customFieldDefinitions,
   db,
   folderMembers,
@@ -340,13 +341,15 @@ export interface TaskWithMeta {
   task: typeof tasks.$inferSelect;
   assignees: { id: string; displayName: string; photoKey: string | null }[];
   tags: TaskTag[];
+  /** True when the task has at least one file attachment. */
+  hasAttachments: boolean;
 }
 
 async function attachAssignees(taskRows: (typeof tasks.$inferSelect)[]): Promise<TaskWithMeta[]> {
   if (taskRows.length === 0) return [];
   const taskIds = taskRows.map((t) => t.id);
 
-  const [assigneeRows, tagRows] = await Promise.all([
+  const [assigneeRows, tagRows, attachmentRows] = await Promise.all([
     db
       .select({
         taskId: taskAssignees.taskId,
@@ -368,6 +371,10 @@ async function attachAssignees(taskRows: (typeof tasks.$inferSelect)[]): Promise
       .innerJoin(tags, eq(taskTags.tagId, tags.id))
       .where(inArray(taskTags.taskId, taskIds))
       .orderBy(asc(tags.name)),
+    db
+      .selectDistinct({ taskId: attachments.taskId })
+      .from(attachments)
+      .where(inArray(attachments.taskId, taskIds)),
   ]);
 
   const assigneesByTask = new Map<string, TaskWithMeta["assignees"]>();
@@ -382,10 +389,12 @@ async function attachAssignees(taskRows: (typeof tasks.$inferSelect)[]): Promise
     list.push({ id: row.id, name: row.name, color: row.color });
     tagsByTask.set(row.taskId, list);
   }
+  const tasksWithAttachments = new Set(attachmentRows.map((r) => r.taskId));
   return taskRows.map((task) => ({
     task,
     assignees: assigneesByTask.get(task.id) ?? [],
     tags: tagsByTask.get(task.id) ?? [],
+    hasAttachments: tasksWithAttachments.has(task.id),
   }));
 }
 
@@ -835,7 +844,18 @@ export const getFolderMembers = cache(async (folderId: string): Promise<SpaceMem
   return rows;
 });
 
-export async function getTaskComments(taskId: string) {
+export type TaskComment = {
+  id: string;
+  body: unknown;
+  createdAt: Date;
+  editedAt: Date | null;
+  authorId: string;
+  authorName: string;
+  authorPhotoKey: string | null;
+  parentCommentId: string | null;
+};
+
+export async function getTaskComments(taskId: string): Promise<TaskComment[]> {
   const { comments } = await import("@aitim/db");
   const { isNull } = await import("drizzle-orm");
   return db
@@ -847,6 +867,7 @@ export async function getTaskComments(taskId: string) {
       authorId: comments.authorId,
       authorName: users.displayName,
       authorPhotoKey: users.photoKey,
+      parentCommentId: comments.parentCommentId,
     })
     .from(comments)
     .innerJoin(users, eq(comments.authorId, users.id))

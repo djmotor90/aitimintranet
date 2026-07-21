@@ -61,3 +61,8 @@ export function spaceCollapseKey(spaceId: string) {
 export function folderCollapseKey(folderId: string) {
   return `folder:${folderId}`;
 }
+
+/** Collapse key for the top-level Tasks nav section (all spaces). */
+export function tasksRootCollapseKey() {
+  return "tasks-root";
+}

@@ -24,6 +24,7 @@ export interface ActivityEntry {
     | "task.field_changed"
     | "task.archived"
     | "comment.created"
+    | "comment.replied"
     | "attachment.added"
     | "space.created"
     | "list.created"

@@ -110,7 +110,7 @@ export default async function ListPage(props: {
     ? listStatuses
     : listStatuses.filter((s) => s.category !== "done" && s.category !== "cancelled");
 
-  const boardTasks = page.items.map(({ task, assignees, tags: taskTags }) => ({
+  const boardTasks = page.items.map(({ task, assignees, tags: taskTags, hasAttachments }) => ({
     id: task.id,
     number: task.number,
     title: task.title,
@@ -119,6 +119,7 @@ export default async function ListPage(props: {
     statusId: task.statusId,
     assignees,
     tags: taskTags,
+    hasAttachments,
   }));
 
   return (
@@ -174,6 +175,7 @@ export default async function ListPage(props: {
             view={view}
             spaceTags={spaceTags}
             viewId={activeView.id}
+            groupBy={groupBy || ""}
           />
         </Suspense>
         <Suspense>

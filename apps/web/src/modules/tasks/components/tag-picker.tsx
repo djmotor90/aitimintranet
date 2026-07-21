@@ -79,6 +79,8 @@ export function TagPicker({
   disabled,
   compact,
   iconOnly,
+  defaultOpen = false,
+  onOpenChange,
 }: {
   taskId: string;
   /** All tags available in the space. */
@@ -89,8 +91,11 @@ export function TagPicker({
   compact?: boolean;
   /** Compact icon button next to the task title (table view). */
   iconOnly?: boolean;
+  /** Open the popover immediately when mounted (click-to-edit title control). */
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [query, setQuery] = useState("");
   const [createColor, setCreateColor] = useState<string>(TAG_COLOR_PALETTE[5]);
   const [pending, startTransition] = useTransition();
@@ -162,6 +167,7 @@ export function TagPicker({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
+        onOpenChange?.(next);
         if (!next) setQuery("");
       }}
     >
@@ -185,10 +191,8 @@ export function TagPicker({
               "group/tag-btn relative flex size-6 shrink-0 items-center justify-center rounded-md",
               "text-muted-foreground transition-colors",
               "hover:bg-muted hover:text-foreground",
-              "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
-              (open || localSelected.length > 0) && "opacity-100",
-              localSelected.length > 0 && "text-foreground",
-              disabled && "pointer-events-none opacity-0",
+              (open || localSelected.length > 0) && "text-foreground",
+              disabled && "pointer-events-none opacity-40",
             )}
           >
             <Tag className="size-3.5" />

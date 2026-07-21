@@ -510,23 +510,32 @@ function GroupByPopover({
   options,
   listId,
   viewId,
+  /** Effective groupBy from the page (URL override or saved view preference). */
+  groupBy: groupByProp = "",
 }: {
   options: GroupByOption[];
   listId: string;
   viewId?: string;
+  groupBy?: string;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
   const [, startTransition] = useTransition();
 
-  const current = searchParams.get("groupBy") ?? "";
+  // Prefer URL when present so mid-session changes match the address bar;
+  // after a refresh without ?groupBy=, fall back to the saved view value.
+  const current = searchParams.has("groupBy")
+    ? (searchParams.get("groupBy") ?? "")
+    : (groupByProp ?? "");
 
   function select(value: string) {
     const params = new URLSearchParams(searchParams.toString());
     if (value) {
       params.set("groupBy", value);
     } else {
+      // Keep an explicit empty so refresh still shows "None" not a stale view default
+      // until the view save lands — but we also persist "" to the view.
       params.delete("groupBy");
     }
     router.push(`?${params.toString()}`);
@@ -595,6 +604,7 @@ export function FilterBar({
   view,
   spaceTags = [],
   viewId,
+  groupBy = "",
 }: {
   listId: string;
   statuses: { id: string; name: string; color: string }[];
@@ -604,6 +614,8 @@ export function FilterBar({
   spaceTags?: { id: string; name: string; color: string }[];
   /** Active named list view — prefs are persisted onto it when set. */
   viewId?: string;
+  /** Effective group-by used for the table (from URL or saved view). */
+  groupBy?: string;
 }) {
   // Build unified field list with all options resolved
   const userOptions = activeUsers.map((u) => ({ id: u.id, label: u.displayName }));
@@ -664,7 +676,12 @@ export function FilterBar({
     <div className="flex items-center gap-2">
       <FilterPopover fields={fields} listId={listId} viewId={viewId} />
       {view !== "board" && (
-        <GroupByPopover options={groupByOptions} listId={listId} viewId={viewId} />
+        <GroupByPopover
+          options={groupByOptions}
+          listId={listId}
+          viewId={viewId}
+          groupBy={groupBy}
+        />
       )}
     </div>
   );

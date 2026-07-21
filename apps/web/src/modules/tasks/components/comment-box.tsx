@@ -45,10 +45,17 @@ function getAtQuery(text: string, caret: number): { start: number; query: string
 export function CommentBox({
   taskId,
   users,
+  parentCommentId,
+  placeholder,
+  autoFocus,
 }: {
   taskId: string;
   /** Mentionable users — must already be filtered to those with list access. */
   users: UserOption[];
+  /** When set, posts as a reply in that thread. */
+  parentCommentId?: string | null;
+  placeholder?: string;
+  autoFocus?: boolean;
 }) {
   const [body, setBody] = useState("");
   const [mentions, setMentions] = useState<UserOption[]>([]);
@@ -153,6 +160,9 @@ export function CommentBox({
       }}
     >
       <input type="hidden" name="taskId" value={taskId} />
+      {parentCommentId && (
+        <input type="hidden" name="parentCommentId" value={parentCommentId} />
+      )}
       {mentions.map((m) => (
         <input key={m.id} type="hidden" name="mentions" value={m.id} />
       ))}
@@ -162,7 +172,8 @@ export function CommentBox({
           ref={textareaRef}
           name="body"
           rows={3}
-          placeholder="Write a comment… Use @ to mention someone"
+          autoFocus={autoFocus}
+          placeholder={placeholder ?? "Write a comment… Use @ to mention someone"}
           value={body}
           onChange={(e) => {
             setBody(e.target.value);

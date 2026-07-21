@@ -1,3 +1,4 @@
+import { Paperclip } from "lucide-react";
 import Link from "next/link";
 import { UserAvatar } from "@/components/shell/user-avatar";
 import { Badge } from "@/components/ui/badge";
@@ -19,19 +20,25 @@ export interface TaskCardData {
   dueDate: string | null;
   assignees: { id: string; displayName: string; photoKey: string | null }[];
   tags?: { id: string; name: string; color: string }[];
+  hasAttachments?: boolean;
 }
 
 export function TaskCardContent({ task }: { task: TaskCardData }) {
   const overdue = task.dueDate && task.dueDate < new Date().toISOString().slice(0, 10);
   return (
-    <div className="flex flex-col gap-2 rounded-md border bg-card p-3 shadow-sm">
+    <div className="box-border flex flex-col gap-2 rounded-md border border-border bg-card p-3 shadow-sm">
       <div className="flex items-start justify-between gap-2">
         <Link
           href={`/tasks/task/${task.number}`}
-          className="text-sm font-medium leading-snug hover:underline"
+          className="min-w-0 text-sm font-medium leading-snug hover:underline"
         >
           {task.title}
         </Link>
+        {task.hasAttachments && (
+          <span title="Has attachments" aria-label="Has attachments" className="shrink-0 text-muted-foreground">
+            <Paperclip className="size-3.5" />
+          </span>
+        )}
       </div>
       {task.tags && task.tags.length > 0 && <TagChips tags={task.tags} />}
       <div className="flex flex-wrap items-center gap-1.5">

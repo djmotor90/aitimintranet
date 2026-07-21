@@ -1,9 +1,7 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, ListFilter } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "aitim:task-detail-activity-visible";
@@ -13,6 +11,7 @@ export function TaskDetailShell({
   activity,
 }: {
   children: ReactNode;
+  /** Full activity panel content (e.g. ActivityPanel with its own Card chrome). */
   activity: ReactNode;
 }) {
   const [open, setOpen] = useState(true);
@@ -63,32 +62,17 @@ export function TaskDetailShell({
             : <ChevronLeft className="size-3 shrink-0" />}
         </button>
 
-        {/* sliding wrapper — overflow:clip clips without breaking any scroll context */}
+        {/* sliding wrapper — keep a little padding so card borders aren't clipped */}
         <div
-          style={{ overflow: "clip" }}
           className={cn(
-            "h-full transition-all duration-300 ease-in-out",
+            "h-full overflow-hidden transition-all duration-300 ease-in-out",
             mounted
               ? open ? "w-[360px] xl:w-[400px] opacity-100" : "w-0 opacity-0 pointer-events-none"
               : "w-[360px] xl:w-[400px] opacity-100",
           )}
         >
-          {/* aside fills full panel height — no sticky needed */}
-          <aside className="flex h-full w-[360px] xl:w-[400px] flex-col pl-6">
-            <Card className="flex min-h-0 flex-1 flex-col">
-              <CardHeader className="shrink-0 border-b">
-                <CardTitle className="text-base">Activity</CardTitle>
-                <CardAction>
-                  <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
-                    <ListFilter className="size-4" />
-                    Filter
-                  </Button>
-                </CardAction>
-              </CardHeader>
-              <CardContent className="flex min-h-0 flex-1 flex-col gap-5">
-                {activity}
-              </CardContent>
-            </Card>
+          <aside className="flex h-full w-[360px] xl:w-[400px] flex-col py-1 pr-1 pl-6">
+            {activity}
           </aside>
         </div>
       </div>

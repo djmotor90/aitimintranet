@@ -34,6 +34,7 @@ import {
 import {
   folderCollapseKey,
   spaceCollapseKey,
+  tasksRootCollapseKey,
   useNavCollapse,
 } from "@/modules/tasks/components/use-nav-collapse";
 import type { FolderNavNode, ListNavNode } from "@/modules/tasks/queries";
@@ -41,14 +42,25 @@ import type { NavIcon, NavItem } from "@/modules/types";
 import { cn } from "@/lib/utils";
 import { NotificationBadge } from "./notification-badge";
 
-/** Collect collapse keys for every space/folder that contains the current path. */
+/**
+ * Ancestors to auto-expand when landing on a list URL so the active list is visible.
+ * Only runs for list paths (`/tasks/:space/:list…`), not bare `/tasks` or `/tasks/:space`
+ * — those used to re-expand spaces on every space-link click and made collapse feel broken
+ * (folders aren't links, so their collapse stuck; spaces are links, so they didn't).
+ */
 function ancestorKeysForPath(taskNavTree: TaskNavTreeItem[], pathname: string): string[] {
   const keys: string[] = [];
+  // /tasks/:spaceSlug/:listSlug[…]  — require a list segment
+  const listPath = pathname.match(/^\/tasks\/([^/]+)\/([^/]+)/);
+  if (!listPath) return keys;
+  const spaceSlug = listPath[1];
+  // Skip task detail URLs handled as /tasks/task/:number
+  if (spaceSlug === "task") return keys;
+
   for (const space of taskNavTree) {
-    const spaceHref = `/tasks/${space.slug}`;
-    const underSpace = pathname === spaceHref || pathname.startsWith(`${spaceHref}/`);
-    if (!underSpace) continue;
+    if (space.slug !== spaceSlug) continue;
     keys.push(spaceCollapseKey(space.id));
+    keys.push(tasksRootCollapseKey());
 
     function walk(node: FolderNavNode) {
       if (folderContainsPath(node, space.slug, pathname)) {
@@ -241,29 +253,75 @@ export function SidebarNav({
         {items.map((item) => {
           const Icon = ICONS[item.icon];
           const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-          const showTaskTree = item.href === "/tasks" && active && taskNavTree.length > 0;
+          const isTasks = item.href === "/tasks";
+          const tasksRootExpanded = isExpanded(tasksRootCollapseKey());
+          // Tree is available when on any /tasks/* route and we have spaces to show.
+          const tasksTreeAvailable = isTasks && active && taskNavTree.length > 0;
+          const showTaskTree = tasksTreeAvailable && tasksRootExpanded;
+
           const linkEl = (
-            <Link
-              href={item.href}
+            <div
               className={cn(
-                "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                "flex items-center gap-1 rounded-md text-sm font-medium transition-colors",
                 active
                   ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
             >
-              <Icon className="size-4" />
-              <span className="min-w-0 flex-1 truncate">{item.label}</span>
-              {item.href === "/notifications" && <NotificationBadge />}
-              {showTaskTree && <ChevronDown className="size-3.5" />}
-            </Link>
+              <Link
+                href={item.href}
+                className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2"
+              >
+                <Icon className="size-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.href === "/notifications" && <NotificationBadge />}
+              </Link>
+              {tasksTreeAvailable && (
+                <button
+                  type="button"
+                  aria-label={tasksRootExpanded ? "Collapse Tasks" : "Expand Tasks"}
+                  aria-expanded={tasksRootExpanded}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggle(tasksRootCollapseKey());
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className={cn(
+                    "mr-2 flex size-6 shrink-0 items-center justify-center rounded",
+                    active
+                      ? "text-primary-foreground/80 hover:bg-primary-foreground/10"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {tasksRootExpanded ? (
+                    <ChevronDown className="size-3.5" />
+                  ) : (
+                    <ChevronRight className="size-3.5" />
+                  )}
+                </button>
+              )}
+            </div>
           );
           return (
             <div key={item.href}>
-              {item.href === "/tasks" ? (
+              {isTasks ? (
                 <TasksRootContextMenu isAdmin={isAdmin}>{linkEl}</TasksRootContextMenu>
               ) : (
-                linkEl
+                // Non-tasks items: keep a simple full-row link (no chevron chrome).
+                <Link
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  <Icon className="size-4" />
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {item.href === "/notifications" && <NotificationBadge />}
+                </Link>
               )}
 
               {showTaskTree && (
@@ -292,6 +350,7 @@ export function SidebarNav({
                                 e.stopPropagation();
                                 toggle(spaceCollapseKey(space.id));
                               }}
+                              onPointerDown={(e) => e.stopPropagation()}
                               className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
                             >
                               {spaceExpanded ? (

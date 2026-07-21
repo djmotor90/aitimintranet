@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Columns3, Pencil } from "lucide-react";
+import { ChevronRight, Columns3, Paperclip, Pencil, Tag } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type DragEvent,
@@ -245,6 +245,7 @@ const TaskRow = memo(function TaskRow({
   const task = item.task;
   const assignees = item.assignees;
   const taskTags = item.tags ?? [];
+  const hasAttachments = item.hasAttachments;
   const cf = (task.customFields ?? {}) as Record<string, unknown>;
   // Only one interactive editor per row at a time — keeps scroll paint cheap.
   const [editingCol, setEditingCol] = useState<string | null>(null);
@@ -269,11 +270,18 @@ const TaskRow = memo(function TaskRow({
           </TableCell>
         );
 
-      case "title":
-        // Title stays a real link; pencil mounts the light editor only when asked.
-        // Tag chips are display-only here — full tag edit lives in the Tags column.
+      case "title": {
+        // Title = link. Tag + pencil appear together on row hover; pickers mount on click only.
+        const editingTags = canEdit && editingCol === "title-tags";
+        // Shared hover reveal: both icons fade in when the title cell is hovered.
+        const iconBtn = cn(
+          "relative flex size-6 shrink-0 items-center justify-center rounded-md",
+          "text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground",
+          // Always show when task already has tags (dots); otherwise only on hover.
+          "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
+        );
         return (
-          <TableCell key={colId} className="min-w-0">
+          <TableCell key={colId} className="min-w-0 overflow-visible">
             {editing ? (
               <TitleEditCell
                 taskId={task.id}
@@ -294,35 +302,89 @@ const TaskRow = memo(function TaskRow({
                 >
                   {task.title}
                 </Link>
-                {taskTags.length > 0 && (
-                  <span className="ml-1 hidden min-w-0 sm:inline">
-                    <TagChips tags={taskTags.slice(0, 2)} />
+                {hasAttachments && (
+                  <span
+                    title="Has attachments"
+                    aria-label="Has attachments"
+                    className="inline-flex shrink-0 text-muted-foreground"
+                  >
+                    <Paperclip className="size-3.5" />
                   </span>
                 )}
+                <span className="min-w-0 flex-1" aria-hidden />
+
                 {canEdit && (
-                  <button
-                    type="button"
-                    title="Edit title"
-                    aria-label="Edit title"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      openEdit("title");
-                    }}
-                    className={cn(
-                      "flex size-6 shrink-0 items-center justify-center rounded-md",
-                      "text-muted-foreground opacity-0 transition-opacity",
-                      "hover:bg-muted hover:text-foreground",
-                      "group-hover/title:opacity-100 focus-visible:opacity-100",
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    {editingTags ? (
+                      <TagPicker
+                        taskId={task.id}
+                        spaceTags={spaceTags}
+                        selectedTags={taskTags}
+                        iconOnly
+                        defaultOpen
+                        onOpenChange={(open) => {
+                          if (!open) closeEdit();
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        title={
+                          taskTags.length > 0
+                            ? `Tags: ${taskTags.map((t) => t.name).join(", ")}`
+                            : "Add tags"
+                        }
+                        aria-label={
+                          taskTags.length > 0
+                            ? `Edit tags (${taskTags.length})`
+                            : "Add tags"
+                        }
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openEdit("title-tags");
+                        }}
+                        className={cn(
+                          iconBtn,
+                          // Keep tag control visible when tags already exist.
+                          taskTags.length > 0 && "opacity-100 text-foreground",
+                        )}
+                      >
+                        <Tag className="size-3.5" />
+                        {taskTags.length > 0 && (
+                          <span className="absolute -right-0.5 -top-0.5 flex -space-x-0.5">
+                            {taskTags.slice(0, 3).map((t) => (
+                              <span
+                                key={t.id}
+                                className="size-1.5 rounded-full ring-1 ring-background"
+                                style={{ backgroundColor: t.color }}
+                              />
+                            ))}
+                          </span>
+                        )}
+                      </button>
                     )}
-                  >
-                    <Pencil className="size-3.5" />
-                  </button>
+
+                    <button
+                      type="button"
+                      title="Edit title"
+                      aria-label="Edit title"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openEdit("title");
+                      }}
+                      className={iconBtn}
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                  </div>
                 )}
               </div>
             )}
           </TableCell>
         );
+      }
 
       case "status": {
         const st = statusById.get(task.statusId);
