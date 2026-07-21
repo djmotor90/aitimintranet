@@ -1,5 +1,16 @@
 import { db, lists, spaces, users } from "@aitim/db";
 import { eq } from "drizzle-orm";
+import {
+  CalendarClock,
+  CalendarPlus,
+  CheckCircle2,
+  Flag,
+  Paperclip,
+  Sparkles,
+  Tag as TagIcon,
+  Text,
+  Users as UsersIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +26,7 @@ import { AttachmentList } from "@/modules/tasks/components/attachment-list";
 import { AttachmentUpload } from "@/modules/tasks/components/attachment-upload";
 import { AssigneeSelect } from "@/modules/tasks/components/assignee-select";
 import { CustomFieldInput } from "@/modules/tasks/components/custom-field-input";
+import { PRIORITY_STYLES } from "@/modules/tasks/components/task-card";
 import { TagPicker } from "@/modules/tasks/components/tag-picker";
 import { TaskDetailShell } from "@/modules/tasks/components/task-detail-shell";
 import { RichTextViewer } from "@/components/editor/rich-text-editor";
@@ -33,6 +45,69 @@ import {
   getTaskComments,
   getUsersWithListAccess,
 } from "@/modules/tasks/queries";
+
+/** Purely cosmetic accents — icon + tint per field, no behavior change. */
+const FIELD_ACCENTS: Record<string, string> = {
+  status: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  priority: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300",
+  due_date: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
+  start_date: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
+  created_at: "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300",
+  closed_at: "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300",
+  assignees: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300",
+  tags: "bg-pink-100 text-pink-700 dark:bg-pink-950 dark:text-pink-300",
+  description: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
+};
+
+const FIELD_ICONS: Record<string, typeof CalendarClock> = {
+  status: CheckCircle2,
+  priority: Flag,
+  due_date: CalendarClock,
+  start_date: CalendarPlus,
+  created_at: CalendarPlus,
+  closed_at: CheckCircle2,
+  assignees: UsersIcon,
+  tags: TagIcon,
+  description: Text,
+};
+
+/** Cycled per field-group card so the page doesn't read as one flat gray wall. */
+const GROUP_ACCENTS = [
+  "border-l-blue-400",
+  "border-l-purple-400",
+  "border-l-emerald-400",
+  "border-l-amber-400",
+  "border-l-pink-400",
+];
+
+function FieldIcon({ fieldId }: { fieldId: string }) {
+  const Icon = FIELD_ICONS[fieldId] ?? Sparkles;
+  const accent = FIELD_ACCENTS[fieldId] ?? "bg-muted text-muted-foreground";
+  return (
+    <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-md", accent)}>
+      <Icon className="size-3" />
+    </span>
+  );
+}
+
+function FieldLabel({
+  fieldId,
+  htmlFor,
+  muted,
+  children,
+}: {
+  fieldId: string;
+  htmlFor?: string;
+  muted?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Label htmlFor={htmlFor} className={cn("flex items-center gap-1.5", muted && "text-muted-foreground")}>
+      <FieldIcon fieldId={fieldId} />
+      {children}
+    </Label>
+  );
+}
 
 export default async function TaskDetailPage(props: { params: Promise<{ number: string }> }) {
   const { number } = await props.params;
@@ -85,6 +160,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
   const description = task.description as StoredRichDoc;
   const savedLayout = list.taskLayout as TaskLayout | null;
   const layout = savedLayout ?? defaultLayout(fieldDefs);
+  const currentStatus = listStatuses.find((s) => s.id === task.statusId);
 
   return (
     <TaskDetailShell
@@ -100,14 +176,31 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
       }
     >
       <div className="flex flex-col gap-4">
-        <div className="text-sm text-muted-foreground">
-          <Link href={`/tasks/${space.slug}/${list.slug}`} className="hover:underline">
-            {space.name} / {list.name}
-          </Link>
-          <span className="mx-2">·</span>
-          {task.number}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-sm text-muted-foreground">
+            <Link href={`/tasks/${space.slug}/${list.slug}`} className="hover:underline">
+              {space.name} / {list.name}
+            </Link>
+            <span className="mx-2">·</span>
+            {task.number}
+          </div>
+          {currentStatus && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
+              style={{ backgroundColor: `${currentStatus.color}1f`, color: currentStatus.color }}
+            >
+              <span className="size-1.5 rounded-full" style={{ backgroundColor: currentStatus.color }} />
+              {currentStatus.name}
+            </span>
+          )}
+          {task.priority && (
+            <Badge variant="secondary" className={cn("text-[10px]", PRIORITY_STYLES[task.priority])}>
+              <Flag className="mr-1 size-2.5" />
+              {task.priority}
+            </Badge>
+          )}
           {task.isArchived && (
-            <Badge variant="destructive" className="ml-2">
+            <Badge variant="destructive">
               archived
             </Badge>
           )}
@@ -127,7 +220,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
 
           {/* Tags sit under the title like ClickUp (also available as a layout field). */}
           <div className="flex flex-col gap-1.5">
-            <Label>Tags</Label>
+            <FieldLabel fieldId="tags">Tags</FieldLabel>
             <TagPicker
               taskId={task.id}
               spaceTags={spaceTags}
@@ -137,7 +230,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
           </div>
 
           {/* layout-driven field groups */}
-          {layout.groups.map((group) => {
+          {layout.groups.map((group, groupIndex) => {
             const showBorder = (group as { showBorder?: boolean }).showBorder ?? true;
             const colClassMap: Record<number, string> = {
               1: "flex flex-col gap-3",
@@ -148,12 +241,15 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
             };
             const cols = group.columns ?? 2;
             const colClass = colClassMap[cols] ?? colClassMap[2];
+            const accentBorder = GROUP_ACCENTS[groupIndex % GROUP_ACCENTS.length];
             return (
             <div
               key={group.id}
               className={cn(
                 "box-border flex flex-col gap-3 p-4",
                 showBorder && "rounded-lg border border-border bg-card shadow-sm",
+                "border-l-4",
+                accentBorder,
               )}
             >
               {group.label && (
@@ -165,7 +261,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                 {group.fields.map(({ id: fieldId }) => {
                   if (fieldId === "status") return (
                     <div key="status" className="flex flex-col gap-1.5">
-                      <Label htmlFor="statusId">Status</Label>
+                      <FieldLabel fieldId="status" htmlFor="statusId">Status</FieldLabel>
                       <select
                         id="statusId"
                         name="statusId"
@@ -181,7 +277,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "priority") return (
                     <div key="priority" className="flex flex-col gap-1.5">
-                      <Label htmlFor="priority">Priority</Label>
+                      <FieldLabel fieldId="priority" htmlFor="priority">Priority</FieldLabel>
                       <select
                         id="priority"
                         name="priority"
@@ -199,7 +295,9 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "due_date") return (
                     <div key="due_date" className="flex flex-col gap-1.5">
-                      <Label htmlFor="dueDate">Due date</Label>
+                      <FieldLabel fieldId="due_date">
+                        <Label htmlFor="dueDate" className="contents">Due date</Label>
+                      </FieldLabel>
                       <Input
                         id="dueDate"
                         name="dueDate"
@@ -211,7 +309,9 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "start_date") return (
                     <div key="start_date" className="flex flex-col gap-1.5">
-                      <Label htmlFor="startDate">Start date</Label>
+                      <FieldLabel fieldId="start_date">
+                        <Label htmlFor="startDate" className="contents">Start date</Label>
+                      </FieldLabel>
                       <Input
                         id="startDate"
                         name="startDate"
@@ -223,7 +323,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "created_at") return (
                     <div key="created_at" className="flex flex-col gap-1.5">
-                      <Label className="text-muted-foreground">Created date</Label>
+                      <FieldLabel fieldId="created_at" muted>Created date</FieldLabel>
                       <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
                         {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(task.createdAt)}
                       </div>
@@ -231,7 +331,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "closed_at") return (
                     <div key="closed_at" className="flex flex-col gap-1.5">
-                      <Label className="text-muted-foreground">Closed date</Label>
+                      <FieldLabel fieldId="closed_at" muted>Closed date</FieldLabel>
                       <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
                         {task.completedAt
                           ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(task.completedAt)
@@ -241,7 +341,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "assignees") return (
                     <div key="assignees" className="flex flex-col gap-1.5">
-                      <Label>Assignees</Label>
+                      <FieldLabel fieldId="assignees">Assignees</FieldLabel>
                       <AssigneeSelect
                         taskId={task.id}
                         users={activeUsers}
@@ -252,7 +352,7 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "tags") return (
                     <div key="tags" className="flex flex-col gap-1.5 sm:col-span-2">
-                      <Label>Tags</Label>
+                      <FieldLabel fieldId="tags">Tags</FieldLabel>
                       <TagPicker
                         taskId={task.id}
                         spaceTags={spaceTags}
@@ -263,7 +363,6 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
                   );
                   if (fieldId === "description") return (
                     <div key="description" className="flex flex-col gap-1.5 sm:col-span-2">
-                      <Label>Description</Label>
                       {canEdit ? (
                         <TaskDescriptionEditor
                           taskId={task.id}
@@ -305,7 +404,10 @@ export default async function TaskDetailPage(props: { params: Promise<{ number: 
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border">
-            <CardTitle className="text-base">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                <Paperclip className="size-3" />
+              </span>
               Attachments ({taskAttachments.length})
             </CardTitle>
             {canEdit && <AttachmentUpload taskId={task.id} />}
